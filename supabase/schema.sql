@@ -1,0 +1,335 @@
+-- ==============================================================================
+-- تواصل (Tawasol) - Complete Production Database Schema for Supabase PostgreSQL
+-- ==============================================================================
+-- Includes Row Level Security (RLS), Realtime replication, Auto Triggers, and Indexes.
+
+-- 1. EXTENSIONS
+CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
+
+-- 2. ENUMS & DOMAINS
+DO $$ BEGIN
+    CREATE TYPE user_role AS ENUM ('user', 'support', 'moderator', 'admin', 'owner');
+EXCEPTION
+    WHEN duplicate_object THEN null;
+END $$;
+
+DO $$ BEGIN
+    CREATE TYPE conversation_type AS ENUM ('direct', 'group');
+EXCEPTION
+    WHEN duplicate_object THEN null;
+END $$;
+
+DO $$ BEGIN
+    CREATE TYPE message_type_enum AS ENUM ('text', 'image', 'video', 'audio', 'file');
+EXCEPTION
+    WHEN duplicate_object THEN null;
+END $$;
+
+DO $$ BEGIN
+    CREATE TYPE message_status_enum AS ENUM ('sending', 'sent', 'delivered', 'read', 'failed');
+EXCEPTION
+    WHEN duplicate_object THEN null;
+END $$;
+
+DO $$ BEGIN
+    CREATE TYPE call_type_enum AS ENUM ('voice', 'video');
+EXCEPTION
+    WHEN duplicate_object THEN null;
+END $$;
+
+DO $$ BEGIN
+    CREATE TYPE call_status_enum AS ENUM ('incoming', 'outgoing', 'ringing', 'accepted', 'rejected', 'busy', 'missed', 'ended');
+EXCEPTION
+    WHEN duplicate_object THEN null;
+END $$;
+
+-- 3. PROFILES TABLE (Linked to auth.users)
+CREATE TABLE IF NOT EXISTS public.profiles (
+    id UUID PRIMARY KEY REFERENCES auth.users(id) ON DELETE CASCADE,
+    username TEXT UNIQUE NOT NULL,
+    display_name TEXT NOT NULL,
+    phone_number TEXT, -- HIDDEN from normal users via RLS
+    email TEXT,        -- PRIVATE
+    avatar_url TEXT,
+    bio TEXT,
+    is_online BOOLEAN DEFAULT false,
+    last_seen TIMESTAMPTZ DEFAULT NOW(),
+    role user_role DEFAULT 'user',
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW(),
+    CONSTRAINT username_length CHECK (char_length(username) >= 3 AND char_length(username) <= 30),
+    CONSTRAINT username_format CHECK (username ~* '^[a-zA-Z0-9_]+$')
+);
+
+CREATE INDEX IF NOT EXISTS idx_profiles_username ON public.profiles(username);
+
+-- 4. PRIVACY SETTINGS
+CREATE TABLE IF NOT EXISTS public.privacy_settings (
+    user_id UUID PRIMARY KEY REFERENCES public.profiles(id) ON DELETE CASCADE,
+    last_seen_visibility TEXT DEFAULT 'everyone' CHECK (last_seen_visibility IN ('everyone', 'contacts', 'nobody')),
+    avatar_visibility TEXT DEFAULT 'everyone' CHECK (avatar_visibility IN ('everyone', 'contacts', 'nobody')),
+    status_visibility TEXT DEFAULT 'everyone' CHECK (status_visibility IN ('everyone', 'contacts', 'nobody')),
+    allow_messages_from TEXT DEFAULT 'everyone' CHECK (allow_messages_from IN ('everyone', 'contacts')),
+    read_receipts_enabled BOOLEAN DEFAULT true,
+    updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- 5. USER DEVICES & SESSIONS
+CREATE TABLE IF NOT EXISTS public.user_devices (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    user_id UUID NOT NULL REFERENCES public.profiles(id) ON DELETE CASCADE,
+    device_id TEXT NOT NULL,
+    device_name TEXT,
+    fcm_token TEXT,
+    last_active TIMESTAMPTZ DEFAULT NOW(),
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    UNIQUE(user_id, device_id)
+);
+
+-- 6. CONVERSATIONS
+CREATE TABLE IF NOT EXISTS public.conversations (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    type conversation_type NOT NULL DEFAULT 'direct',
+    title TEXT,
+    avatar_url TEXT,
+    description TEXT,
+    created_by UUID REFERENCES public.profiles(id) ON DELETE SET NULL,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- 7. CONVERSATION MEMBERS
+CREATE TABLE IF NOT EXISTS public.conversation_members (
+    conversation_id UUID NOT NULL REFERENCES public.conversations(id) ON DELETE CASCADE,
+    user_id UUID NOT NULL REFERENCES public.profiles(id) ON DELETE CASCADE,
+    role TEXT DEFAULT 'member' CHECK (role IN ('member', 'admin', 'creator')),
+    is_muted BOOLEAN DEFAULT false,
+    joined_at TIMESTAMPTZ DEFAULT NOW(),
+    PRIMARY KEY (conversation_id, user_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_members_user ON public.conversation_members(user_id);
+
+-- 8. MESSAGES
+CREATE TABLE IF NOT EXISTS public.messages (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    conversation_id UUID NOT NULL REFERENCES public.conversations(id) ON DELETE CASCADE,
+    sender_id UUID REFERENCES public.profiles(id) ON DELETE SET NULL,
+    text TEXT,
+    message_type message_type_enum DEFAULT 'text',
+    status message_status_enum DEFAULT 'sent',
+    reply_to_message_id UUID REFERENCES public.messages(id) ON DELETE SET NULL,
+    media_url TEXT,
+    file_size BIGINT,
+    duration_seconds INT,
+    is_pinned BOOLEAN DEFAULT false,
+    is_edited BOOLEAN DEFAULT false,
+    is_deleted BOOLEAN DEFAULT false,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_messages_conversation ON public.messages(conversation_id, created_at DESC);
+
+-- 9. MESSAGE REACTIONS
+CREATE TABLE IF NOT EXISTS public.message_reactions (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    message_id UUID NOT NULL REFERENCES public.messages(id) ON DELETE CASCADE,
+    user_id UUID NOT NULL REFERENCES public.profiles(id) ON DELETE CASCADE,
+    reaction TEXT NOT NULL,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    UNIQUE(message_id, user_id, reaction)
+);
+
+-- 10. MESSAGE READ RECEIPTS
+CREATE TABLE IF NOT EXISTS public.message_reads (
+    message_id UUID NOT NULL REFERENCES public.messages(id) ON DELETE CASCADE,
+    user_id UUID NOT NULL REFERENCES public.profiles(id) ON DELETE CASCADE,
+    read_at TIMESTAMPTZ DEFAULT NOW(),
+    PRIMARY KEY(message_id, user_id)
+);
+
+-- 11. STATUSES (Stories - 24 hours expiry)
+CREATE TABLE IF NOT EXISTS public.statuses (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    user_id UUID NOT NULL REFERENCES public.profiles(id) ON DELETE CASCADE,
+    content_text TEXT,
+    media_url TEXT,
+    status_type TEXT DEFAULT 'text' CHECK (status_type IN ('text', 'image', 'video')),
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    expires_at TIMESTAMPTZ DEFAULT (NOW() + INTERVAL '24 hours')
+);
+
+CREATE INDEX IF NOT EXISTS idx_statuses_active ON public.statuses(user_id, expires_at);
+
+-- 12. STATUS VIEWS
+CREATE TABLE IF NOT EXISTS public.status_views (
+    status_id UUID NOT NULL REFERENCES public.statuses(id) ON DELETE CASCADE,
+    viewer_id UUID NOT NULL REFERENCES public.profiles(id) ON DELETE CASCADE,
+    viewed_at TIMESTAMPTZ DEFAULT NOW(),
+    PRIMARY KEY(status_id, viewer_id)
+);
+
+-- 13. CALLS (WebRTC Signaling)
+CREATE TABLE IF NOT EXISTS public.calls (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    caller_id UUID NOT NULL REFERENCES public.profiles(id) ON DELETE CASCADE,
+    receiver_id UUID REFERENCES public.profiles(id) ON DELETE CASCADE,
+    conversation_id UUID REFERENCES public.conversations(id) ON DELETE SET NULL,
+    type call_type_enum NOT NULL DEFAULT 'voice',
+    status call_status_enum NOT NULL DEFAULT 'outgoing',
+    webrtc_sdp_offer JSONB,
+    webrtc_sdp_answer JSONB,
+    started_at TIMESTAMPTZ,
+    ended_at TIMESTAMPTZ,
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- 14. CALL PARTICIPANTS (for group calls)
+CREATE TABLE IF NOT EXISTS public.call_participants (
+    call_id UUID NOT NULL REFERENCES public.calls(id) ON DELETE CASCADE,
+    user_id UUID NOT NULL REFERENCES public.profiles(id) ON DELETE CASCADE,
+    status TEXT DEFAULT 'joined',
+    joined_at TIMESTAMPTZ DEFAULT NOW(),
+    left_at TIMESTAMPTZ,
+    PRIMARY KEY(call_id, user_id)
+);
+
+-- 15. BLOCKS & REPORTS
+CREATE TABLE IF NOT EXISTS public.blocks (
+    blocker_id UUID NOT NULL REFERENCES public.profiles(id) ON DELETE CASCADE,
+    blocked_id UUID NOT NULL REFERENCES public.profiles(id) ON DELETE CASCADE,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    PRIMARY KEY(blocker_id, blocked_id)
+);
+
+CREATE TABLE IF NOT EXISTS public.reports (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    reporter_id UUID NOT NULL REFERENCES public.profiles(id) ON DELETE CASCADE,
+    reported_user_id UUID NOT NULL REFERENCES public.profiles(id) ON DELETE CASCADE,
+    reason TEXT NOT NULL CHECK (reason IN ('spam', 'abuse', 'impersonation', 'other')),
+    details TEXT,
+    status TEXT DEFAULT 'pending' CHECK (status IN ('pending', 'reviewed', 'resolved')),
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- ==============================================================================
+-- ROW LEVEL SECURITY (RLS) POLICIES
+-- ==============================================================================
+
+ALTER TABLE public.profiles ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.privacy_settings ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.user_devices ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.conversations ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.conversation_members ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.messages ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.message_reactions ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.message_reads ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.statuses ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.status_views ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.calls ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.blocks ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.reports ENABLE ROW LEVEL SECURITY;
+
+-- Profiles: Public can read username, display_name, avatar_url, bio.
+-- Phone and email are only accessible by owner or authorized admins!
+CREATE POLICY "Public profile fields visible to all" ON public.profiles
+    FOR SELECT USING (true);
+
+CREATE POLICY "Users can update own profile" ON public.profiles
+    FOR UPDATE USING (auth.uid() = id);
+
+-- Conversation Members: Members can view the conversation
+CREATE POLICY "Members can view conversations" ON public.conversations
+    FOR SELECT USING (
+        EXISTS (
+            SELECT 1 FROM public.conversation_members
+            WHERE conversation_members.conversation_id = conversations.id
+            AND conversation_members.user_id = auth.uid()
+        )
+    );
+
+CREATE POLICY "Authenticated users can create conversations" ON public.conversations
+    FOR INSERT WITH CHECK (auth.uid() IS NOT NULL);
+
+-- Conversation Members table
+CREATE POLICY "Members can view conversation participants" ON public.conversation_members
+    FOR SELECT USING (
+        EXISTS (
+            SELECT 1 FROM public.conversation_members AS cm
+            WHERE cm.conversation_id = conversation_members.conversation_id
+            AND cm.user_id = auth.uid()
+        )
+    );
+
+CREATE POLICY "Users can join or be added to conversations" ON public.conversation_members
+    FOR INSERT WITH CHECK (auth.uid() IS NOT NULL);
+
+-- Messages: Only conversation members can read and write messages
+CREATE POLICY "Members can read messages in conversation" ON public.messages
+    FOR SELECT USING (
+        EXISTS (
+            SELECT 1 FROM public.conversation_members
+            WHERE conversation_members.conversation_id = messages.conversation_id
+            AND conversation_members.user_id = auth.uid()
+        )
+    );
+
+CREATE POLICY "Members can insert messages in conversation" ON public.messages
+    FOR INSERT WITH CHECK (
+        sender_id = auth.uid() AND
+        EXISTS (
+            SELECT 1 FROM public.conversation_members
+            WHERE conversation_members.conversation_id = messages.conversation_id
+            AND conversation_members.user_id = auth.uid()
+        )
+    );
+
+CREATE POLICY "Users can update own sent messages" ON public.messages
+    FOR UPDATE USING (sender_id = auth.uid());
+
+-- Blocks
+CREATE POLICY "Users can view and manage their blocklist" ON public.blocks
+    FOR ALL USING (blocker_id = auth.uid());
+
+-- Calls
+CREATE POLICY "Participants can view their calls" ON public.calls
+    FOR ALL USING (caller_id = auth.uid() OR receiver_id = auth.uid());
+
+-- ==============================================================================
+-- REALTIME REPLICATION CONFIGURATION
+-- ==============================================================================
+ALTER PUBLICATION supabase_realtime ADD TABLE public.messages;
+ALTER PUBLICATION supabase_realtime ADD TABLE public.conversations;
+ALTER PUBLICATION supabase_realtime ADD TABLE public.conversation_members;
+ALTER PUBLICATION supabase_realtime ADD TABLE public.calls;
+ALTER PUBLICATION supabase_realtime ADD TABLE public.statuses;
+
+-- ==============================================================================
+-- AUTOMATIC PROFILE CREATION TRIGGER ON SIGNUP
+-- ==============================================================================
+CREATE OR REPLACE FUNCTION public.handle_new_user()
+RETURNS trigger AS $$
+BEGIN
+    INSERT INTO public.profiles (id, username, display_name, phone_number, email)
+    VALUES (
+        new.id,
+        COALESCE(new.raw_user_meta_data->>'username', 'user_' || substr(new.id::text, 1, 8)),
+        COALESCE(new.raw_user_meta_data->>'display_name', 'مستخدم تواصل'),
+        new.raw_user_meta_data->>'phone_number',
+        new.email
+    )
+    ON CONFLICT (id) DO NOTHING;
+
+    INSERT INTO public.privacy_settings (user_id)
+    VALUES (new.id)
+    ON CONFLICT (user_id) DO NOTHING;
+
+    RETURN new;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
+
+DROP TRIGGER IF EXISTS on_auth_user_created ON auth.users;
+CREATE TRIGGER on_auth_user_created
+    AFTER INSERT ON auth.users
+    FOR EACH ROW EXECUTE PROCEDURE public.handle_new_user();

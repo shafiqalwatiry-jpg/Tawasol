@@ -1,0 +1,6 @@
+{
+  "name": "تواصل - Tawasol",
+  "description": "تطبيق مراسلة واتصال فوري أندرويد حقيقي مبني بلغة Kotlin و Jetpack Compose مع Supabase و Room.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
