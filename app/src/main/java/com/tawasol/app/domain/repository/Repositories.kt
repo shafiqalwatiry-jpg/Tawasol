@@ -33,11 +33,21 @@ interface UserRepository {
 
 interface ChatRepository {
     fun getConversations(): Flow<List<Conversation>>
-    fun getMessages(conversationId: String): Flow<List<Message>>
+    fun getMessages(conversationId: String, limit: Int = 50): Flow<List<Message>>
+    fun getConversation(conversationId: String): Flow<Conversation?>
+    suspend fun getOrCreateDirectConversation(otherUserId: String): Result<String>
     suspend fun sendMessage(
         conversationId: String,
         text: String?,
         replyToId: String? = null
     ): Result<Message>
+    suspend fun markConversationAsRead(conversationId: String): Result<Unit>
+    suspend fun fetchOlderMessages(
+        conversationId: String,
+        beforeTimestamp: java.time.Instant,
+        limit: Int = 30
+    ): Result<Int>
+    fun startRealtimeMessagesSubscription(conversationId: String): Flow<Message>
+    suspend fun syncConversations(): Result<Unit>
     suspend fun syncOutbox(): Result<Unit>
 }

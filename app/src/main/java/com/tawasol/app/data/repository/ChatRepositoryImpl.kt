@@ -13,13 +13,23 @@ import com.tawasol.app.domain.model.MessageStatus
 import com.tawasol.app.domain.model.MessageType
 import com.tawasol.app.domain.repository.ChatRepository
 import io.github.jan.supabase.postgrest.from
+import io.github.jan.supabase.postgrest.query.Order
+import io.github.jan.supabase.realtime.PostgresAction
+import io.github.jan.supabase.realtime.channel
+import io.github.jan.supabase.realtime.postgresChangeFlow
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.callbackFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.decodeFromJsonElement
 import kotlinx.serialization.json.put
 import java.time.Instant
 import java.util.UUID
@@ -37,12 +47,34 @@ data class RemoteMessageDto(
     val created_at: String
 )
 
+@Serializable
+data class RemoteConversationMemberDto(
+    val conversation_id: String,
+    val user_id: String,
+    val role: String = "member",
+    val last_read_at: String? = null
+)
+
+@Serializable
+data class RemoteConversationDto(
+    val id: String,
+    val type: String = "direct",
+    val title: String? = null,
+    val avatar_url: String? = null,
+    val last_message_text: String? = null,
+    val last_message_at: String? = null,
+    val created_at: String? = null,
+    val updated_at: String? = null
+)
+
 class ChatRepositoryImpl(
     private val database: TawasolDatabase,
     private val supabaseProvider: SupabaseClientProvider,
     private val networkMonitor: NetworkMonitor,
     private val currentUserIdProvider: () -> String?
 ) : ChatRepository {
+
+    private val json = Json { ignoreUnknownKeys = true }
 
     override fun getConversations(): Flow<List<Conversation>> {
         return database.conversationDao().getAllConversations().map { entities ->
@@ -52,6 +84,8 @@ class ChatRepositoryImpl(
                     type = entity.type,
                     title = entity.title,
                     avatarUrl = entity.avatarUrl,
+                    peerUserId = entity.peerUserId,
+                    peerUsername = entity.peerUsername,
                     lastMessage = entity.lastMessageText,
                     lastMessageTime = entity.lastMessageTimestamp,
                     unreadCount = entity.unreadCount,
@@ -62,8 +96,28 @@ class ChatRepositoryImpl(
         }
     }
 
-    override fun getMessages(conversationId: String): Flow<List<Message>> {
-        return database.messageDao().getMessagesForConversation(conversationId).map { entities ->
+    override fun getConversation(conversationId: String): Flow<Conversation?> {
+        return database.conversationDao().getConversationFlow(conversationId).map { entity ->
+            entity?.let {
+                Conversation(
+                    id = it.id,
+                    type = it.type,
+                    title = it.title,
+                    avatarUrl = it.avatarUrl,
+                    peerUserId = it.peerUserId,
+                    peerUsername = it.peerUsername,
+                    lastMessage = it.lastMessageText,
+                    lastMessageTime = it.lastMessageTimestamp,
+                    unreadCount = it.unreadCount,
+                    isPinned = it.isPinned,
+                    isMuted = it.isMuted
+                )
+            }
+        }
+    }
+
+    override fun getMessages(conversationId: String, limit: Int): Flow<List<Message>> {
+        return database.messageDao().getMessagesPaged(conversationId, limit).map { entities ->
             entities.map { entity ->
                 Message(
                     id = entity.id,
@@ -72,12 +126,92 @@ class ChatRepositoryImpl(
                     text = entity.text,
                     type = try { MessageType.valueOf(entity.messageType.uppercase()) } catch (e: Exception) { MessageType.TEXT },
                     status = try { MessageStatus.valueOf(entity.status.uppercase()) } catch (e: Exception) { MessageStatus.SENT },
-                    mediaUrl = entity.mediaUrl,
-                    localFilePath = entity.localFilePath,
                     replyToMessageId = entity.replyToMessageId,
                     createdAt = entity.createdAt
                 )
             }
+        }
+    }
+
+    override suspend fun getOrCreateDirectConversation(otherUserId: String): Result<String> = withContext(Dispatchers.IO) {
+        val currentUserId = currentUserIdProvider()
+            ?: return@withContext Result.failure(Exception("يجب تسجيل الدخول لبدء محادثة"))
+
+        if (currentUserId == otherUserId) {
+            return@withContext Result.failure(Exception("لا يمكن بدء محادثة مع نفسك"))
+        }
+
+        // 1. Check local database first
+        val localConvo = database.conversationDao().getConversationByPeerUserId(otherUserId)
+        if (localConvo != null) {
+            return@withContext Result.success(localConvo.id)
+        }
+
+        // 2. Fetch peer profile details for name and avatar
+        val peerProfile = try {
+            supabaseProvider.postgrest.from(SupabaseConfig.PROFILES_TABLE)
+                .select {
+                    filter { eq("id", otherUserId) }
+                }.decodeSingleOrNull<ProfileDto>()
+        } catch (e: Exception) {
+            database.userDao().getUserByIdSync(otherUserId)?.let {
+                ProfileDto(
+                    id = it.id,
+                    username = it.username,
+                    display_name = it.displayName,
+                    avatar_url = it.avatarUrl,
+                    bio = it.bio,
+                    is_online = it.isOnline
+                )
+            }
+        }
+
+        val peerName = peerProfile?.display_name ?: "مستخدم"
+        val peerUsername = peerProfile?.username ?: "user"
+        val peerAvatar = peerProfile?.avatar_url
+
+        // 3. Call atomic RPC on Supabase
+        try {
+            val response = supabaseProvider.postgrest.rpc(
+                "get_or_create_direct_conversation",
+                buildJsonObject {
+                    put("target_user_id", otherUserId)
+                }
+            ).decodeSingleOrNull<String>()
+
+            val convoId = response ?: UUID.randomUUID().toString()
+
+            // Save in Room
+            val entity = ConversationEntity(
+                id = convoId,
+                type = "direct",
+                title = peerName,
+                avatarUrl = peerAvatar,
+                peerUserId = otherUserId,
+                peerUsername = peerUsername,
+                lastMessageText = null,
+                lastMessageTimestamp = Instant.now(),
+                createdAt = Instant.now(),
+                updatedAt = Instant.now()
+            )
+            database.conversationDao().insertConversation(entity)
+
+            Result.success(convoId)
+        } catch (e: Exception) {
+            // Offline fallback: generate local conversation ID
+            val fallbackId = UUID.randomUUID().toString()
+            val entity = ConversationEntity(
+                id = fallbackId,
+                type = "direct",
+                title = peerName,
+                avatarUrl = peerAvatar,
+                peerUserId = otherUserId,
+                peerUsername = peerUsername,
+                createdAt = Instant.now(),
+                updatedAt = Instant.now()
+            )
+            database.conversationDao().insertConversation(entity)
+            Result.success(fallbackId)
         }
     }
 
@@ -89,6 +223,11 @@ class ChatRepositoryImpl(
         val currentUserId = currentUserIdProvider()
             ?: return@withContext Result.failure(Exception("يجب تسجيل الدخول لإرسال الرسالة"))
 
+        val cleanText = text?.trim()
+        if (cleanText.isNullOrEmpty()) {
+            return@withContext Result.failure(Exception("لا يمكن إرسال رسالة فارغة"))
+        }
+
         val localId = UUID.randomUUID().toString()
         val now = Instant.now()
 
@@ -97,7 +236,7 @@ class ChatRepositoryImpl(
             id = localId,
             conversationId = conversationId,
             senderId = currentUserId,
-            text = text,
+            text = cleanText,
             messageType = "text",
             status = "sending",
             replyToMessageId = replyToId,
@@ -106,26 +245,18 @@ class ChatRepositoryImpl(
         database.messageDao().insertMessage(localMessage)
 
         // Update local conversation preview
-        database.conversationDao().insertConversation(
-            ConversationEntity(
-                id = conversationId,
-                type = "direct",
-                title = "محادثة",
-                lastMessageText = text,
-                lastMessageTimestamp = now
-            )
-        )
+        database.conversationDao().updateLastMessage(conversationId, cleanText, now)
 
-        // 2. Check if device is currently online
+        // 2. Check network connectivity
         val isOnline = try { networkMonitor.isOnline.first() } catch (e: Exception) { false }
 
         if (!isOnline) {
-            // Queue into Outbox for automatic synchronization when connectivity is restored
+            // Queue into Outbox for automatic synchronization
             database.messageDao().insertOutboxMessage(
                 OutboxMessageEntity(
                     localId = localId,
                     conversationId = conversationId,
-                    text = text,
+                    text = cleanText,
                     messageType = "text",
                     replyToMessageId = replyToId
                 )
@@ -135,7 +266,7 @@ class ChatRepositoryImpl(
                     id = localId,
                     conversationId = conversationId,
                     senderId = currentUserId,
-                    text = text,
+                    text = cleanText,
                     status = MessageStatus.SENDING,
                     createdAt = now
                 )
@@ -148,7 +279,7 @@ class ChatRepositoryImpl(
                 put("id", localId)
                 put("conversation_id", conversationId)
                 put("sender_id", currentUserId)
-                put("text", text)
+                put("text", cleanText)
                 put("message_type", "text")
                 put("status", "sent")
                 if (replyToId != null) put("reply_to_message_id", replyToId)
@@ -165,23 +296,268 @@ class ChatRepositoryImpl(
                     id = localId,
                     conversationId = conversationId,
                     senderId = currentUserId,
-                    text = text,
+                    text = cleanText,
                     status = MessageStatus.SENT,
                     createdAt = now
                 )
             )
         } catch (e: Exception) {
-            // Put in outbox for retry
+            // Update status to failed and queue in outbox
             database.messageDao().insertOutboxMessage(
                 OutboxMessageEntity(
                     localId = localId,
                     conversationId = conversationId,
-                    text = text,
+                    text = cleanText,
                     messageType = "text",
                     lastError = e.message
                 )
             )
             database.messageDao().updateMessageStatus(localId, "failed")
+            Result.failure(Exception("تعذر إرسال الرسالة: ${e.localizedMessage ?: "تحقق من الاتصال"}"))
+        }
+    }
+
+    override suspend fun markConversationAsRead(conversationId: String): Result<Unit> = withContext(Dispatchers.IO) {
+        val currentUserId = currentUserIdProvider() ?: return@withContext Result.success(Unit)
+
+        // Update local Room database
+        database.conversationDao().markAsRead(conversationId)
+
+        // Update Supabase if online
+        try {
+            val payload = buildJsonObject {
+                put("last_read_at", Instant.now().toString())
+            }
+            supabaseProvider.postgrest.from("conversation_members").update(payload) {
+                filter {
+                    eq("conversation_id", conversationId)
+                    eq("user_id", currentUserId)
+                }
+            }
+        } catch (e: Exception) {
+            // Ignore offline errors for read receipts
+        }
+
+        Result.success(Unit)
+    }
+
+    override suspend fun fetchOlderMessages(
+        conversationId: String,
+        beforeTimestamp: Instant,
+        limit: Int
+    ): Result<Int> = withContext(Dispatchers.IO) {
+        try {
+            val remoteMessages = supabaseProvider.postgrest.from(SupabaseConfig.MESSAGES_TABLE)
+                .select {
+                    filter {
+                        eq("conversation_id", conversationId)
+                        lt("created_at", beforeTimestamp.toString())
+                    }
+                    order(column = "created_at", order = Order.DESCENDING)
+                    limit(limit.toLong())
+                }.decodeList<RemoteMessageDto>()
+
+            if (remoteMessages.isEmpty()) {
+                return@withContext Result.success(0)
+            }
+
+            val entities = remoteMessages.map { dto ->
+                MessageEntity(
+                    id = dto.id,
+                    conversationId = dto.conversation_id,
+                    senderId = dto.sender_id,
+                    text = dto.text,
+                    messageType = dto.message_type,
+                    status = "sent",
+                    replyToMessageId = dto.reply_to_message_id,
+                    createdAt = parseInstantOrNow(dto.created_at)
+                )
+            }
+
+            database.messageDao().insertMessages(entities)
+            Result.success(entities.size)
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    override fun startRealtimeMessagesSubscription(conversationId: String): Flow<Message> = callbackFlow {
+        val channel = supabaseProvider.realtime.channel("chat:$conversationId")
+
+        val changeFlow = channel.postgresChangeFlow<PostgresAction>(schema = "public") {
+            table = SupabaseConfig.MESSAGES_TABLE
+            filter = "conversation_id=eq.$conversationId"
+        }
+
+        val job = launch(Dispatchers.IO) {
+            try {
+                channel.subscribe()
+                changeFlow.collect { action ->
+                    if (action is PostgresAction.Insert) {
+                        try {
+                            val record = action.record
+                            val dto = json.decodeFromJsonElement<RemoteMessageDto>(record)
+                            val now = parseInstantOrNow(dto.created_at)
+
+                            // Save into Room (idempotent REPLACE prevents duplicates)
+                            val entity = MessageEntity(
+                                id = dto.id,
+                                conversationId = dto.conversation_id,
+                                senderId = dto.sender_id,
+                                text = dto.text,
+                                messageType = dto.message_type,
+                                status = "sent",
+                                replyToMessageId = dto.reply_to_message_id,
+                                createdAt = now
+                            )
+                            database.messageDao().insertMessage(entity)
+
+                            // Update conversation preview
+                            database.conversationDao().updateLastMessage(
+                                conversationId = dto.conversation_id,
+                                text = dto.text,
+                                timestamp = now
+                            )
+
+                            // If message is from other user, increment unread count
+                            val currentUserId = currentUserIdProvider()
+                            if (dto.sender_id != currentUserId) {
+                                database.conversationDao().incrementUnreadCount(dto.conversation_id)
+                            }
+
+                            val domainMessage = Message(
+                                id = dto.id,
+                                conversationId = dto.conversation_id,
+                                senderId = dto.sender_id,
+                                text = dto.text,
+                                type = MessageType.TEXT,
+                                status = MessageStatus.SENT,
+                                replyToMessageId = dto.reply_to_message_id,
+                                createdAt = now
+                            )
+                            trySend(domainMessage)
+                        } catch (e: Exception) {
+                            // Ignore malformed realtime payload
+                        }
+                    }
+                }
+            } catch (e: Exception) {
+                // Ignore realtime connectivity error
+            }
+        }
+
+        awaitClose {
+            job.cancel()
+            CoroutineScope(Dispatchers.IO).launch {
+                try {
+                    channel.unsubscribe()
+                } catch (e: Exception) {
+                    // Ignore unsubscribe errors
+                }
+            }
+        }
+    }
+
+    override suspend fun syncConversations(): Result<Unit> = withContext(Dispatchers.IO) {
+        val currentUserId = currentUserIdProvider() ?: return@withContext Result.success(Unit)
+
+        try {
+            // 1. Fetch user's conversation memberships
+            val memberships = supabaseProvider.postgrest.from("conversation_members")
+                .select {
+                    filter { eq("user_id", currentUserId) }
+                }.decodeList<RemoteConversationMemberDto>()
+
+            if (memberships.isEmpty()) {
+                return@withContext Result.success(Unit)
+            }
+
+            for (membership in memberships) {
+                val convoId = membership.conversation_id
+
+                // Fetch conversation details
+                val convo = try {
+                    supabaseProvider.postgrest.from(SupabaseConfig.CONVERSATIONS_TABLE)
+                        .select {
+                            filter { eq("id", convoId) }
+                        }.decodeSingleOrNull<RemoteConversationDto>()
+                } catch (e: Exception) {
+                    null
+                } ?: continue
+
+                // Find other participant for direct conversation
+                val otherMember = try {
+                    supabaseProvider.postgrest.from("conversation_members")
+                        .select {
+                            filter {
+                                eq("conversation_id", convoId)
+                                neq("user_id", currentUserId)
+                            }
+                        }.decodeSingleOrNull<RemoteConversationMemberDto>()
+                } catch (e: Exception) {
+                    null
+                }
+
+                val peerProfile = if (otherMember != null) {
+                    try {
+                        supabaseProvider.postgrest.from(SupabaseConfig.PROFILES_TABLE)
+                            .select {
+                                filter { eq("id", otherMember.user_id) }
+                            }.decodeSingleOrNull<ProfileDto>()
+                    } catch (e: Exception) {
+                        null
+                    }
+                } else null
+
+                val title = peerProfile?.display_name ?: convo.title ?: "محادثة"
+                val avatarUrl = peerProfile?.avatar_url ?: convo.avatar_url
+                val peerUsername = peerProfile?.username
+
+                val entity = ConversationEntity(
+                    id = convoId,
+                    type = convo.type,
+                    title = title,
+                    avatarUrl = avatarUrl,
+                    peerUserId = otherMember?.user_id,
+                    peerUsername = peerUsername,
+                    lastMessageText = convo.last_message_text,
+                    lastMessageTimestamp = convo.last_message_at?.let { parseInstantOrNow(it) },
+                    createdAt = convo.created_at?.let { parseInstantOrNow(it) } ?: Instant.now(),
+                    updatedAt = convo.updated_at?.let { parseInstantOrNow(it) } ?: Instant.now()
+                )
+                database.conversationDao().insertConversation(entity)
+
+                // Fetch latest batch of messages for this conversation (50 messages)
+                try {
+                    val messages = supabaseProvider.postgrest.from(SupabaseConfig.MESSAGES_TABLE)
+                        .select {
+                            filter { eq("conversation_id", convoId) }
+                            order(column = "created_at", order = Order.DESCENDING)
+                            limit(50)
+                        }.decodeList<RemoteMessageDto>()
+
+                    if (messages.isNotEmpty()) {
+                        val messageEntities = messages.map { dto ->
+                            MessageEntity(
+                                id = dto.id,
+                                conversationId = dto.conversation_id,
+                                senderId = dto.sender_id,
+                                text = dto.text,
+                                messageType = dto.message_type,
+                                status = "sent",
+                                replyToMessageId = dto.reply_to_message_id,
+                                createdAt = parseInstantOrNow(dto.created_at)
+                            )
+                        }
+                        database.messageDao().insertMessages(messageEntities)
+                    }
+                } catch (e: Exception) {
+                    // Ignore message fetch failure during convo sync
+                }
+            }
+
+            Result.success(Unit)
+        } catch (e: Exception) {
             Result.failure(e)
         }
     }
@@ -209,5 +585,14 @@ class ChatRepositoryImpl(
             }
         }
         Result.success(Unit)
+    }
+
+    private fun parseInstantOrNow(isoString: String?): Instant {
+        if (isoString.isNullOrBlank()) return Instant.now()
+        return try {
+            Instant.parse(isoString)
+        } catch (e: Exception) {
+            Instant.now()
+        }
     }
 }

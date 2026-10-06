@@ -12,9 +12,13 @@ import com.tawasol.app.data.repository.UserRepositoryImpl
 import com.tawasol.app.domain.repository.AuthRepository
 import com.tawasol.app.domain.repository.ChatRepository
 import com.tawasol.app.domain.repository.UserRepository
+import com.tawasol.app.domain.usecase.GetConversationUseCase
 import com.tawasol.app.domain.usecase.GetConversationsUseCase
+import com.tawasol.app.domain.usecase.GetMessagesUseCase
+import com.tawasol.app.domain.usecase.GetOrCreateConversationUseCase
 import com.tawasol.app.domain.usecase.GetPrivacySettingsUseCase
 import com.tawasol.app.domain.usecase.LoginUseCase
+import com.tawasol.app.domain.usecase.MarkConversationAsReadUseCase
 import com.tawasol.app.domain.usecase.RegisterUseCase
 import com.tawasol.app.domain.usecase.SearchUsersUseCase
 import com.tawasol.app.domain.usecase.SendMessageUseCase
@@ -38,7 +42,11 @@ interface AppContainer {
     val getPrivacySettingsUseCase: GetPrivacySettingsUseCase
     val updatePrivacySettingsUseCase: UpdatePrivacySettingsUseCase
     val getConversationsUseCase: GetConversationsUseCase
+    val getConversationUseCase: GetConversationUseCase
+    val getMessagesUseCase: GetMessagesUseCase
     val sendMessageUseCase: SendMessageUseCase
+    val getOrCreateConversationUseCase: GetOrCreateConversationUseCase
+    val markConversationAsReadUseCase: MarkConversationAsReadUseCase
 }
 
 class DefaultAppContainer(private val context: Context) : AppContainer {
@@ -108,7 +116,23 @@ class DefaultAppContainer(private val context: Context) : AppContainer {
         GetConversationsUseCase(chatRepository)
     }
 
+    override val getConversationUseCase: GetConversationUseCase by lazy {
+        GetConversationUseCase(chatRepository)
+    }
+
+    override val getMessagesUseCase: GetMessagesUseCase by lazy {
+        GetMessagesUseCase(chatRepository)
+    }
+
     override val sendMessageUseCase: SendMessageUseCase by lazy {
         SendMessageUseCase(chatRepository)
+    }
+
+    override val getOrCreateConversationUseCase: GetOrCreateConversationUseCase by lazy {
+        GetOrCreateConversationUseCase(chatRepository)
+    }
+
+    override val markConversationAsReadUseCase: MarkConversationAsReadUseCase by lazy {
+        MarkConversationAsReadUseCase(chatRepository)
     }
 }

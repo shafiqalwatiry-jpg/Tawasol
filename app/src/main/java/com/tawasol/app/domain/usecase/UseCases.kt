@@ -132,9 +132,40 @@ class GetConversationsUseCase(private val chatRepository: ChatRepository) {
 
 class SendMessageUseCase(private val chatRepository: ChatRepository) {
     suspend operator fun invoke(conversationId: String, text: String): Result<Message> {
-        if (text.isBlank()) {
+        val cleanText = text.trim()
+        if (cleanText.isEmpty()) {
             return Result.failure(IllegalArgumentException("لا يمكن إرسال رسالة فارغة"))
         }
-        return chatRepository.sendMessage(conversationId, text.trim())
+        if (cleanText.length > 5000) {
+            return Result.failure(IllegalArgumentException("الرسالة طويلة جداً، الحد الأقصى 5000 حرف"))
+        }
+        return chatRepository.sendMessage(conversationId, cleanText)
+    }
+}
+
+class GetMessagesUseCase(private val chatRepository: ChatRepository) {
+    operator fun invoke(conversationId: String, limit: Int = 50): Flow<List<Message>> {
+        return chatRepository.getMessages(conversationId, limit)
+    }
+}
+
+class GetConversationUseCase(private val chatRepository: ChatRepository) {
+    operator fun invoke(conversationId: String): Flow<Conversation?> {
+        return chatRepository.getConversation(conversationId)
+    }
+}
+
+class GetOrCreateConversationUseCase(private val chatRepository: ChatRepository) {
+    suspend operator fun invoke(otherUserId: String): Result<String> {
+        if (otherUserId.isBlank()) {
+            return Result.failure(IllegalArgumentException("معرف المستخدم غير صحيح"))
+        }
+        return chatRepository.getOrCreateDirectConversation(otherUserId.trim())
+    }
+}
+
+class MarkConversationAsReadUseCase(private val chatRepository: ChatRepository) {
+    suspend operator fun invoke(conversationId: String): Result<Unit> {
+        return chatRepository.markConversationAsRead(conversationId)
     }
 }

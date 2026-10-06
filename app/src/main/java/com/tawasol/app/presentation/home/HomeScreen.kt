@@ -62,7 +62,8 @@ data class HomeUiState(
 
 class HomeViewModel(
     private val getConversationsUseCase: GetConversationsUseCase,
-    private val authRepository: AuthRepository
+    private val authRepository: AuthRepository,
+    private val chatRepository: com.tawasol.app.domain.repository.ChatRepository? = null
 ) : ViewModel() {
 
     private val _uiState = MutableStateFlow(HomeUiState())
@@ -77,6 +78,17 @@ class HomeViewModel(
 
     init {
         refreshCurrentUser()
+        syncConversations()
+    }
+
+    fun syncConversations() {
+        viewModelScope.launch {
+            try {
+                chatRepository?.syncConversations()
+            } catch (e: Exception) {
+                // Ignore offline sync errors
+            }
+        }
     }
 
     fun refreshCurrentUser() {

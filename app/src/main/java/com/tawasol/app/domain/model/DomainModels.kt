@@ -75,6 +75,8 @@ data class Conversation(
     val type: String, // "direct" or "group"
     val title: String,
     val avatarUrl: String? = null,
+    val peerUserId: String? = null,
+    val peerUsername: String? = null,
     val lastMessage: String? = null,
     val lastMessageTime: Instant? = null,
     val unreadCount: Int = 0,

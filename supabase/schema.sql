@@ -100,17 +100,20 @@ CREATE TABLE IF NOT EXISTS public.conversations (
     title TEXT,
     avatar_url TEXT,
     description TEXT,
+    last_message_text TEXT,
+    last_message_at TIMESTAMPTZ DEFAULT NOW(),
     created_by UUID REFERENCES public.profiles(id) ON DELETE SET NULL,
     created_at TIMESTAMPTZ DEFAULT NOW(),
     updated_at TIMESTAMPTZ DEFAULT NOW()
 );
 
--- 7. CONVERSATION MEMBERS
+-- 7. CONVERSATION MEMBERS (PARTICIPANTS)
 CREATE TABLE IF NOT EXISTS public.conversation_members (
     conversation_id UUID NOT NULL REFERENCES public.conversations(id) ON DELETE CASCADE,
     user_id UUID NOT NULL REFERENCES public.profiles(id) ON DELETE CASCADE,
     role TEXT DEFAULT 'member' CHECK (role IN ('member', 'admin', 'creator')),
     is_muted BOOLEAN DEFAULT false,
+    last_read_at TIMESTAMPTZ DEFAULT NOW(),
     joined_at TIMESTAMPTZ DEFAULT NOW(),
     PRIMARY KEY (conversation_id, user_id)
 );
@@ -419,3 +422,83 @@ BEGIN
     RETURN found_username;
 END;
 $$;
+
+-- ==============================================================================
+-- PHASE 3: SECURE ATOMIC 1-TO-1 CONVERSATION CREATION
+-- ==============================================================================
+CREATE OR REPLACE FUNCTION public.get_or_create_direct_conversation(target_user_id UUID)
+RETURNS UUID
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+DECLARE
+    current_uid UUID;
+    existing_id UUID;
+    new_convo_id UUID;
+BEGIN
+    current_uid := auth.uid();
+    IF current_uid IS NULL THEN
+        RAISE EXCEPTION 'Authentication required';
+    END IF;
+
+    IF current_uid = target_user_id THEN
+        RAISE EXCEPTION 'Cannot start a conversation with yourself';
+    END IF;
+
+    -- Check if target user actually exists in profiles
+    IF NOT EXISTS (SELECT 1 FROM public.profiles WHERE id = target_user_id) THEN
+        RAISE EXCEPTION 'Target user does not exist';
+    END IF;
+
+    -- Look for existing 1-to-1 conversation
+    SELECT cm1.conversation_id INTO existing_id
+    FROM public.conversation_members cm1
+    JOIN public.conversation_members cm2 ON cm1.conversation_id = cm2.conversation_id
+    JOIN public.conversations c ON c.id = cm1.conversation_id
+    WHERE c.type = 'direct'
+      AND cm1.user_id = current_uid
+      AND cm2.user_id = target_user_id
+    LIMIT 1;
+
+    IF existing_id IS NOT NULL THEN
+        RETURN existing_id;
+    END IF;
+
+    -- Create new conversation atomically
+    INSERT INTO public.conversations (type, created_by, last_message_at)
+    VALUES ('direct', current_uid, NOW())
+    RETURNING id INTO new_convo_id;
+
+    -- Insert both participants
+    INSERT INTO public.conversation_members (conversation_id, user_id, role, last_read_at)
+    VALUES 
+        (new_convo_id, current_uid, 'creator', NOW()),
+        (new_convo_id, target_user_id, 'member', NOW());
+
+    RETURN new_convo_id;
+END;
+$$;
+
+-- ==============================================================================
+-- PHASE 3: UPDATE CONVERSATION PREVIEW ON NEW MESSAGE
+-- ==============================================================================
+CREATE OR REPLACE FUNCTION public.handle_new_message_preview()
+RETURNS trigger AS $$
+BEGIN
+    UPDATE public.conversations
+    SET 
+        last_message_text = COALESCE(NEW.text, 'رسالة'),
+        last_message_at = NEW.created_at,
+        updated_at = NOW()
+    WHERE id = NEW.conversation_id;
+
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
+
+DROP TRIGGER IF EXISTS on_message_inserted ON public.messages;
+CREATE TRIGGER on_message_inserted
+    AFTER INSERT ON public.messages
+    FOR EACH ROW EXECUTE PROCEDURE public.handle_new_message_preview();
+

@@ -74,7 +74,8 @@ data class UserProfileUiState(
 class UserProfileViewModel(
     private val userId: String,
     private val userRepository: UserRepository,
-    private val authRepository: AuthRepository
+    private val authRepository: AuthRepository,
+    private val getOrCreateConversationUseCase: com.tawasol.app.domain.usecase.GetOrCreateConversationUseCase? = null
 ) : ViewModel() {
 
     private val _uiState = MutableStateFlow(UserProfileUiState())
@@ -82,6 +83,22 @@ class UserProfileViewModel(
 
     init {
         loadProfile()
+    }
+
+    fun startChat(onSuccess: (String) -> Unit) {
+        val targetId = if (userId == "self") authRepository.currentUserId ?: "" else userId
+        if (targetId.isEmpty() || getOrCreateConversationUseCase == null) return
+
+        _uiState.update { it.copy(isLoading = true) }
+        viewModelScope.launch {
+            val result = getOrCreateConversationUseCase(targetId)
+            _uiState.update { it.copy(isLoading = false) }
+            result.onSuccess { convoId ->
+                onSuccess(convoId)
+            }.onFailure { err ->
+                _uiState.update { it.copy(errorMessage = err.localizedMessage ?: "تعذر بدء المحادثة") }
+            }
+        }
     }
 
     fun loadProfile() {
@@ -113,7 +130,8 @@ fun UserProfileScreen(
     viewModel: UserProfileViewModel,
     onNavigateBack: () -> Unit,
     onNavigateToEditProfile: () -> Unit,
-    onNavigateToPrivacySettings: () -> Unit
+    onNavigateToPrivacySettings: () -> Unit,
+    onStartChat: (String) -> Unit = {}
 ) {
     val state by viewModel.uiState.collectAsState()
 
@@ -282,6 +300,16 @@ fun UserProfileScreen(
                                 )
                             }
                         } else {
+                            // Start Chat Button
+                            TawasolButton(
+                                text = "بدء محادثة",
+                                onClick = {
+                                    viewModel.startChat(onStartChat)
+                                }
+                            )
+
+                            Spacer(modifier = Modifier.height(16.dp))
+
                             // Other user profile: Security guarantee badge
                             Card(
                                 colors = CardDefaults.cardColors(

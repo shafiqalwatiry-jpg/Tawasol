@@ -126,6 +126,13 @@ fun ChatsTab(
                         ),
                         textAlign = androidx.compose.ui.text.style.TextAlign.Center
                     )
+
+                    Spacer(modifier = Modifier.height(20.dp))
+
+                    com.tawasol.app.presentation.components.TawasolButton(
+                        text = "ابدأ محادثة",
+                        onClick = onNewChatClick
+                    )
                 }
             }
         } else {

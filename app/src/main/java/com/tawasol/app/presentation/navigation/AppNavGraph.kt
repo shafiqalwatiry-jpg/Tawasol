@@ -129,7 +129,8 @@ fun AppNavGraph(
             val homeViewModel = viewModel<HomeViewModel> {
                 HomeViewModel(
                     getConversationsUseCase = appContainer.getConversationsUseCase,
-                    authRepository = appContainer.authRepository
+                    authRepository = appContainer.authRepository,
+                    chatRepository = appContainer.chatRepository
                 )
             }
             HomeScreen(
@@ -214,7 +215,8 @@ fun AppNavGraph(
                 UserProfileViewModel(
                     userId = userId,
                     userRepository = appContainer.userRepository,
-                    authRepository = appContainer.authRepository
+                    authRepository = appContainer.authRepository,
+                    getOrCreateConversationUseCase = appContainer.getOrCreateConversationUseCase
                 )
             }
             UserProfileScreen(
@@ -225,6 +227,9 @@ fun AppNavGraph(
                 },
                 onNavigateToPrivacySettings = {
                     navController.navigate(Screen.PrivacySettings.route)
+                },
+                onStartChat = { conversationId ->
+                    navController.navigate(Screen.ChatDetail.createRoute(conversationId))
                 }
             )
         }
@@ -285,6 +290,48 @@ fun AppNavGraph(
             PrivacySettingsScreen(
                 viewModel = privacyViewModel,
                 onNavigateBack = { navController.popBackStack() }
+            )
+        }
+
+        // Chat Detail Route (Phase 3)
+        composable(
+            route = Screen.ChatDetail.route,
+            arguments = listOf(
+                navArgument("conversationId") { type = NavType.StringType }
+            ),
+            enterTransition = {
+                slideIntoContainer(
+                    AnimatedContentTransitionScope.SlideDirection.Left,
+                    animationSpec = tween(300)
+                )
+            },
+            exitTransition = {
+                slideOutOfContainer(
+                    AnimatedContentTransitionScope.SlideDirection.Right,
+                    animationSpec = tween(300)
+                )
+            }
+        ) { backStackEntry ->
+            val conversationId = backStackEntry.arguments?.getString("conversationId") ?: ""
+            val chatViewModel = viewModel<com.tawasol.app.presentation.chat.ChatViewModel>(
+                key = "chat_$conversationId"
+            ) {
+                com.tawasol.app.presentation.chat.ChatViewModel(
+                    conversationId = conversationId,
+                    chatRepository = appContainer.chatRepository,
+                    getConversationUseCase = appContainer.getConversationUseCase,
+                    getMessagesUseCase = appContainer.getMessagesUseCase,
+                    sendMessageUseCase = appContainer.sendMessageUseCase,
+                    markConversationAsReadUseCase = appContainer.markConversationAsReadUseCase,
+                    authRepository = appContainer.authRepository
+                )
+            }
+            com.tawasol.app.presentation.chat.ChatScreen(
+                viewModel = chatViewModel,
+                onNavigateBack = { navController.popBackStack() },
+                onNavigateToUserProfile = { userId ->
+                    navController.navigate(Screen.UserProfile.createRoute(userId))
+                }
             )
         }
     }
