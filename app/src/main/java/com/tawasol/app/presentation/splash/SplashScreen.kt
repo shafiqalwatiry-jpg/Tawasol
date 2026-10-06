@@ -28,16 +28,20 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.tawasol.app.core.theme.TealPrimary
 import com.tawasol.app.domain.repository.AuthRepository
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.launch
+
+sealed interface SplashDestination {
+    data object Home : SplashDestination
+    data object Login : SplashDestination
+}
 
 class SplashViewModel(
     private val authRepository: AuthRepository
 ) : ViewModel() {
 
-    private val _navigationEvent = MutableSharedFlow<SplashDestination>()
+    private val _navigationEvent = MutableSharedFlow<SplashDestination>(replay = 1)
     val navigationEvent: SharedFlow<SplashDestination> = _navigationEvent
 
     init {
@@ -46,20 +50,15 @@ class SplashViewModel(
 
     private fun checkSession() {
         viewModelScope.launch {
-            delay(1500) // Brief branded splash display
-            val currentUserId = authRepository.currentUserId
-            if (!currentUserId.isNullOrBlank()) {
+            // Restore actual Supabase session and local cache
+            val user = authRepository.restoreSession().getOrNull()
+            if (user != null) {
                 _navigationEvent.emit(SplashDestination.Home)
             } else {
                 _navigationEvent.emit(SplashDestination.Login)
             }
         }
     }
-}
-
-sealed interface SplashDestination {
-    data object Home : SplashDestination
-    data object Login : SplashDestination
 }
 
 @Composable

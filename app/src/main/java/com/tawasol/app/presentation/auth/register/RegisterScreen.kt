@@ -128,7 +128,7 @@ fun RegisterScreen(
     onNavigateToHome: () -> Unit,
     onNavigateToLogin: () -> Unit
 ) {
-    val state = viewModel.uiState.value
+    val state by viewModel.uiState.collectAsState()
 
     if (state.isSuccess) {
         onNavigateToHome()

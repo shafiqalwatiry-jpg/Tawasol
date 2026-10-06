@@ -8,8 +8,37 @@ data class User(
     val displayName: String,
     val avatarUrl: String? = null,
     val bio: String? = null,
+    val phone: String? = null, // Only visible to the user themselves or authorized admin
+    val email: String? = null, // Only visible to the user themselves
     val isOnline: Boolean = false,
-    val lastSeen: Instant? = null
+    val lastSeen: Instant? = null,
+    val createdAt: Instant = Instant.now()
+)
+
+enum class VisibilityOption(val titleArabic: String) {
+    EVERYONE("الجميع"),
+    CONTACTS("جهات الاتصال"),
+    NOBODY("لا أحد");
+
+    companion object {
+        fun fromString(value: String?): VisibilityOption {
+            return when (value?.lowercase()) {
+                "everyone" -> EVERYONE
+                "contacts" -> CONTACTS
+                "nobody" -> NOBODY
+                else -> EVERYONE
+            }
+        }
+    }
+}
+
+data class PrivacySettings(
+    val userId: String,
+    val lastSeenVisibility: VisibilityOption = VisibilityOption.EVERYONE,
+    val onlineStatusVisibility: VisibilityOption = VisibilityOption.EVERYONE,
+    val profilePhotoVisibility: VisibilityOption = VisibilityOption.EVERYONE,
+    val bioVisibility: VisibilityOption = VisibilityOption.EVERYONE,
+    val readReceiptsEnabled: Boolean = true
 )
 
 enum class MessageType {

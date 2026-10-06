@@ -43,13 +43,11 @@ EXCEPTION
     WHEN duplicate_object THEN null;
 END $$;
 
--- 3. PROFILES TABLE (Linked to auth.users)
+-- 3. PROFILES TABLE (Linked to auth.users - STRICTLY PUBLIC SAFE METADATA ONLY)
 CREATE TABLE IF NOT EXISTS public.profiles (
     id UUID PRIMARY KEY REFERENCES auth.users(id) ON DELETE CASCADE,
     username TEXT UNIQUE NOT NULL,
     display_name TEXT NOT NULL,
-    phone_number TEXT, -- HIDDEN from normal users via RLS
-    email TEXT,        -- PRIVATE
     avatar_url TEXT,
     bio TEXT,
     is_online BOOLEAN DEFAULT false,
@@ -63,7 +61,16 @@ CREATE TABLE IF NOT EXISTS public.profiles (
 
 CREATE INDEX IF NOT EXISTS idx_profiles_username ON public.profiles(username);
 
--- 4. PRIVACY SETTINGS
+-- 4. USER PRIVATE CONTACTS (Strictly private: only accessible by user themselves or authorized admin)
+CREATE TABLE IF NOT EXISTS public.user_contacts (
+    user_id UUID PRIMARY KEY REFERENCES public.profiles(id) ON DELETE CASCADE,
+    phone_number TEXT,
+    email TEXT,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- 5. PRIVACY SETTINGS
 CREATE TABLE IF NOT EXISTS public.privacy_settings (
     user_id UUID PRIMARY KEY REFERENCES public.profiles(id) ON DELETE CASCADE,
     last_seen_visibility TEXT DEFAULT 'everyone' CHECK (last_seen_visibility IN ('everyone', 'contacts', 'nobody')),
@@ -74,7 +81,7 @@ CREATE TABLE IF NOT EXISTS public.privacy_settings (
     updated_at TIMESTAMPTZ DEFAULT NOW()
 );
 
--- 5. USER DEVICES & SESSIONS
+-- 6. USER DEVICES & SESSIONS
 CREATE TABLE IF NOT EXISTS public.user_devices (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     user_id UUID NOT NULL REFERENCES public.profiles(id) ON DELETE CASCADE,
@@ -86,7 +93,7 @@ CREATE TABLE IF NOT EXISTS public.user_devices (
     UNIQUE(user_id, device_id)
 );
 
--- 6. CONVERSATIONS
+-- 7. CONVERSATIONS
 CREATE TABLE IF NOT EXISTS public.conversations (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
     type conversation_type NOT NULL DEFAULT 'direct',
@@ -218,6 +225,7 @@ CREATE TABLE IF NOT EXISTS public.reports (
 -- ==============================================================================
 
 ALTER TABLE public.profiles ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.user_contacts ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.privacy_settings ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.user_devices ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.conversations ENABLE ROW LEVEL SECURITY;
@@ -231,13 +239,32 @@ ALTER TABLE public.calls ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.blocks ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.reports ENABLE ROW LEVEL SECURITY;
 
--- Profiles: Public can read username, display_name, avatar_url, bio.
--- Phone and email are only accessible by owner or authorized admins!
+-- Profiles: Public can read public profile details (id, username, display_name, avatar_url, bio, is_online, last_seen)
 CREATE POLICY "Public profile fields visible to all" ON public.profiles
     FOR SELECT USING (true);
 
 CREATE POLICY "Users can update own profile" ON public.profiles
     FOR UPDATE USING (auth.uid() = id);
+
+-- User Contacts: Strictly confidential! Only the account owner can view, insert, or update their phone and email
+CREATE POLICY "Users can only read own private contacts" ON public.user_contacts
+    FOR SELECT USING (auth.uid() = user_id);
+
+CREATE POLICY "Users can update own private contacts" ON public.user_contacts
+    FOR UPDATE USING (auth.uid() = user_id);
+
+CREATE POLICY "Users can insert own private contacts" ON public.user_contacts
+    FOR INSERT WITH CHECK (auth.uid() = user_id);
+
+-- Privacy Settings
+CREATE POLICY "Privacy settings are readable for visibility logic" ON public.privacy_settings
+    FOR SELECT USING (true);
+
+CREATE POLICY "Users can update own privacy settings" ON public.privacy_settings
+    FOR UPDATE USING (auth.uid() = user_id);
+
+CREATE POLICY "Users can insert own privacy settings" ON public.privacy_settings
+    FOR INSERT WITH CHECK (auth.uid() = user_id);
 
 -- Conversation Members: Members can view the conversation
 CREATE POLICY "Members can view conversations" ON public.conversations
@@ -311,15 +338,21 @@ ALTER PUBLICATION supabase_realtime ADD TABLE public.statuses;
 CREATE OR REPLACE FUNCTION public.handle_new_user()
 RETURNS trigger AS $$
 BEGIN
-    INSERT INTO public.profiles (id, username, display_name, phone_number, email)
+    INSERT INTO public.profiles (id, username, display_name)
     VALUES (
         new.id,
         COALESCE(new.raw_user_meta_data->>'username', 'user_' || substr(new.id::text, 1, 8)),
-        COALESCE(new.raw_user_meta_data->>'display_name', 'مستخدم تواصل'),
+        COALESCE(new.raw_user_meta_data->>'display_name', 'مستخدم تواصل')
+    )
+    ON CONFLICT (id) DO NOTHING;
+
+    INSERT INTO public.user_contacts (user_id, phone_number, email)
+    VALUES (
+        new.id,
         new.raw_user_meta_data->>'phone_number',
         new.email
     )
-    ON CONFLICT (id) DO NOTHING;
+    ON CONFLICT (user_id) DO NOTHING;
 
     INSERT INTO public.privacy_settings (user_id)
     VALUES (new.id)
@@ -333,3 +366,56 @@ DROP TRIGGER IF EXISTS on_auth_user_created ON auth.users;
 CREATE TRIGGER on_auth_user_created
     AFTER INSERT ON auth.users
     FOR EACH ROW EXECUTE PROCEDURE public.handle_new_user();
+
+-- ==============================================================================
+-- STORAGE: AVATARS BUCKET SETUP & POLICIES
+-- ==============================================================================
+INSERT INTO storage.buckets (id, name, public) 
+VALUES ('avatars', 'avatars', true)
+ON CONFLICT (id) DO NOTHING;
+
+CREATE POLICY "Avatar images are publicly accessible" ON storage.objects
+    FOR SELECT USING (bucket_id = 'avatars');
+
+CREATE POLICY "Authenticated users can upload own avatar" ON storage.objects
+    FOR INSERT WITH CHECK (
+        bucket_id = 'avatars' 
+        AND auth.role() = 'authenticated'
+        AND (storage.foldername(name))[1] = auth.uid()::text
+    );
+
+CREATE POLICY "Authenticated users can update own avatar" ON storage.objects
+    FOR UPDATE USING (
+        bucket_id = 'avatars' 
+        AND auth.role() = 'authenticated'
+        AND (storage.foldername(name))[1] = auth.uid()::text
+    );
+
+CREATE POLICY "Authenticated users can delete own avatar" ON storage.objects
+    FOR DELETE USING (
+        bucket_id = 'avatars' 
+        AND auth.role() = 'authenticated'
+        AND (storage.foldername(name))[1] = auth.uid()::text
+    );
+
+-- ==============================================================================
+-- SECURE USERNAME LOOKUP BY PRIVATE CONTACT EMAIL (LOGIN RESOLVER)
+-- ==============================================================================
+CREATE OR REPLACE FUNCTION public.get_auth_username_by_contact_email(search_email TEXT)
+RETURNS TEXT
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+DECLARE
+    found_username TEXT;
+BEGIN
+    SELECT p.username INTO found_username
+    FROM public.profiles p
+    JOIN public.user_contacts c ON c.user_id = p.id
+    WHERE LOWER(c.email) = LOWER(search_email)
+    LIMIT 1;
+
+    RETURN found_username;
+END;
+$$;

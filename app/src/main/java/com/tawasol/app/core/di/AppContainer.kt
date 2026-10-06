@@ -13,9 +13,14 @@ import com.tawasol.app.domain.repository.AuthRepository
 import com.tawasol.app.domain.repository.ChatRepository
 import com.tawasol.app.domain.repository.UserRepository
 import com.tawasol.app.domain.usecase.GetConversationsUseCase
+import com.tawasol.app.domain.usecase.GetPrivacySettingsUseCase
 import com.tawasol.app.domain.usecase.LoginUseCase
 import com.tawasol.app.domain.usecase.RegisterUseCase
+import com.tawasol.app.domain.usecase.SearchUsersUseCase
 import com.tawasol.app.domain.usecase.SendMessageUseCase
+import com.tawasol.app.domain.usecase.UpdatePrivacySettingsUseCase
+import com.tawasol.app.domain.usecase.UpdateProfileUseCase
+import com.tawasol.app.domain.usecase.UploadAvatarUseCase
 
 interface AppContainer {
     val database: TawasolDatabase
@@ -27,6 +32,11 @@ interface AppContainer {
     val userRepository: UserRepository
     val loginUseCase: LoginUseCase
     val registerUseCase: RegisterUseCase
+    val searchUsersUseCase: SearchUsersUseCase
+    val updateProfileUseCase: UpdateProfileUseCase
+    val uploadAvatarUseCase: UploadAvatarUseCase
+    val getPrivacySettingsUseCase: GetPrivacySettingsUseCase
+    val updatePrivacySettingsUseCase: UpdatePrivacySettingsUseCase
     val getConversationsUseCase: GetConversationsUseCase
     val sendMessageUseCase: SendMessageUseCase
 }
@@ -63,7 +73,7 @@ class DefaultAppContainer(private val context: Context) : AppContainer {
     }
 
     override val userRepository: UserRepository by lazy {
-        UserRepositoryImpl(database, supabaseProvider)
+        UserRepositoryImpl(database, supabaseProvider, keystoreManager)
     }
 
     override val loginUseCase: LoginUseCase by lazy {
@@ -72,6 +82,26 @@ class DefaultAppContainer(private val context: Context) : AppContainer {
 
     override val registerUseCase: RegisterUseCase by lazy {
         RegisterUseCase(authRepository)
+    }
+
+    override val searchUsersUseCase: SearchUsersUseCase by lazy {
+        SearchUsersUseCase(userRepository)
+    }
+
+    override val updateProfileUseCase: UpdateProfileUseCase by lazy {
+        UpdateProfileUseCase(userRepository)
+    }
+
+    override val uploadAvatarUseCase: UploadAvatarUseCase by lazy {
+        UploadAvatarUseCase(userRepository)
+    }
+
+    override val getPrivacySettingsUseCase: GetPrivacySettingsUseCase by lazy {
+        GetPrivacySettingsUseCase(userRepository)
+    }
+
+    override val updatePrivacySettingsUseCase: UpdatePrivacySettingsUseCase by lazy {
+        UpdatePrivacySettingsUseCase(userRepository)
     }
 
     override val getConversationsUseCase: GetConversationsUseCase by lazy {

@@ -1,5 +1,6 @@
 package com.tawasol.app.presentation.home
 
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Call
@@ -20,6 +21,7 @@ import androidx.compose.material3.NavigationBarItemDefaults
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
@@ -74,10 +76,10 @@ class HomeViewModel(
         )
 
     init {
-        loadCurrentUser()
+        refreshCurrentUser()
     }
 
-    private fun loadCurrentUser() {
+    fun refreshCurrentUser() {
         viewModelScope.launch {
             val user = authRepository.getCurrentUser()
             _uiState.update { it.copy(currentUser = user) }
@@ -86,6 +88,9 @@ class HomeViewModel(
 
     fun selectTab(tab: HomeTab) {
         _uiState.update { it.copy(selectedTab = tab) }
+        if (tab == HomeTab.SETTINGS) {
+            refreshCurrentUser()
+        }
     }
 
     fun onSearchQueryChange(query: String) {
@@ -105,10 +110,18 @@ fun HomeScreen(
     viewModel: HomeViewModel,
     onNavigateToChatDetail: (String) -> Unit,
     onNavigateToNewChat: () -> Unit,
+    onNavigateToUserSearch: () -> Unit,
+    onNavigateToProfile: (String) -> Unit,
+    onNavigateToEditProfile: () -> Unit,
+    onNavigateToPrivacySettings: () -> Unit,
     onNavigateToLogin: () -> Unit
 ) {
     val state by viewModel.uiState.collectAsState()
     val conversations by viewModel.conversations.collectAsState()
+
+    LaunchedEffect(Unit) {
+        viewModel.refreshCurrentUser()
+    }
 
     Scaffold(
         topBar = {
@@ -120,19 +133,21 @@ fun HomeScreen(
                     HomeTab.SETTINGS -> "الإعدادات"
                 },
                 actions = {
-                    IconButton(onClick = { }) {
+                    IconButton(onClick = onNavigateToUserSearch) {
                         Icon(
                             imageVector = Icons.Rounded.Search,
-                            contentDescription = "بحث",
+                            contentDescription = "بحث عن مستخدمين",
                             tint = MaterialTheme.colorScheme.onSurface
                         )
                     }
-                    IconButton(onClick = { }) {
-                        Icon(
-                            imageVector = Icons.Rounded.MoreVert,
-                            contentDescription = "المزيد",
-                            tint = MaterialTheme.colorScheme.onSurface
-                        )
+                    if (state.currentUser != null) {
+                        IconButton(onClick = { onNavigateToProfile("self") }) {
+                            Icon(
+                                imageVector = Icons.Rounded.Person,
+                                contentDescription = "ملفي الشخصي",
+                                tint = TealPrimary
+                            )
+                        }
                     }
                 }
             )
@@ -162,7 +177,7 @@ fun HomeScreen(
         floatingActionButton = {
             if (state.selectedTab == HomeTab.CHATS) {
                 FloatingActionButton(
-                    onClick = onNavigateToNewChat,
+                    onClick = onNavigateToUserSearch,
                     containerColor = TealPrimary,
                     contentColor = Color.White
                 ) {
@@ -174,7 +189,7 @@ fun HomeScreen(
             }
         }
     ) { innerPadding ->
-        androidx.compose.foundation.layout.Box(
+        Box(
             modifier = Modifier.padding(innerPadding)
         ) {
             when (state.selectedTab) {
@@ -183,12 +198,15 @@ fun HomeScreen(
                     searchQuery = state.searchQuery,
                     onSearchQueryChange = viewModel::onSearchQueryChange,
                     onConversationClick = onNavigateToChatDetail,
-                    onNewChatClick = onNavigateToNewChat
+                    onNewChatClick = onNavigateToUserSearch
                 )
                 HomeTab.CALLS -> CallsTab()
                 HomeTab.STATUS -> StatusTab()
                 HomeTab.SETTINGS -> SettingsTab(
                     currentUser = state.currentUser,
+                    onProfileClick = { onNavigateToProfile("self") },
+                    onPrivacyClick = onNavigateToPrivacySettings,
+                    onEditProfileClick = onNavigateToEditProfile,
                     onLogoutClick = {
                         viewModel.logout(onSuccess = onNavigateToLogin)
                     }

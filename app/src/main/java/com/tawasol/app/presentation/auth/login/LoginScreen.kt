@@ -27,10 +27,8 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -54,7 +52,7 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 
 data class LoginUiState(
-    val username: String = "",
+    val identifier: String = "",
     val password: String = "",
     val isPasswordVisible: Boolean = false,
     val isLoading: Boolean = false,
@@ -69,8 +67,8 @@ class LoginViewModel(
     private val _uiState = MutableStateFlow(LoginUiState())
     val uiState: StateFlow<LoginUiState> = _uiState.asStateFlow()
 
-    fun onUsernameChange(username: String) {
-        _uiState.update { it.copy(username = username, errorMessage = null) }
+    fun onIdentifierChange(identifier: String) {
+        _uiState.update { it.copy(identifier = identifier, errorMessage = null) }
     }
 
     fun onPasswordChange(password: String) {
@@ -86,14 +84,14 @@ class LoginViewModel(
         _uiState.update { it.copy(isLoading = true, errorMessage = null) }
 
         viewModelScope.launch {
-            val result = loginUseCase(state.username, state.password)
+            val result = loginUseCase(state.identifier, state.password)
             result.onSuccess {
                 _uiState.update { it.copy(isLoading = false, isSuccess = true) }
             }.onFailure { error ->
                 _uiState.update {
                     it.copy(
                         isLoading = false,
-                        errorMessage = error.localizedMessage ?: "فشل تسجيل الدخول، يرجى المحاولة لاحقاً"
+                        errorMessage = error.localizedMessage ?: "فشل تسجيل الدخول، يرجى التأكد من البيانات"
                     )
                 }
             }
@@ -107,7 +105,7 @@ fun LoginScreen(
     onNavigateToHome: () -> Unit,
     onNavigateToRegister: () -> Unit
 ) {
-    val state = viewModel.uiState.value
+    val state by viewModel.uiState.collectAsState()
 
     if (state.isSuccess) {
         onNavigateToHome()
@@ -160,12 +158,12 @@ fun LoginScreen(
 
             Spacer(modifier = Modifier.height(32.dp))
 
-            // Username input
+            // Identifier input (Username or Email)
             TawasolTextField(
-                value = state.username,
-                onValueChange = viewModel::onUsernameChange,
-                label = "اسم المستخدم",
-                placeholder = "shafiq أو ahmed2026",
+                value = state.identifier,
+                onValueChange = viewModel::onIdentifierChange,
+                label = "اسم المستخدم أو البريد الإلكتروني",
+                placeholder = "shafiq أو user@example.com",
                 leadingIcon = {
                     Icon(
                         imageVector = Icons.Rounded.Person,
@@ -206,7 +204,7 @@ fun LoginScreen(
             if (state.errorMessage != null) {
                 Spacer(modifier = Modifier.height(12.dp))
                 Text(
-                    text = state.errorMessage,
+                    text = state.errorMessage!!,
                     style = MaterialTheme.typography.bodyMedium.copy(
                         color = MaterialTheme.colorScheme.error,
                         fontWeight = FontWeight.Medium
@@ -221,7 +219,7 @@ fun LoginScreen(
                 text = "تسجيل الدخول",
                 onClick = viewModel::login,
                 isLoading = state.isLoading,
-                enabled = state.username.isNotBlank() && state.password.isNotBlank()
+                enabled = state.identifier.isNotBlank() && state.password.isNotBlank()
             )
 
             Spacer(modifier = Modifier.height(24.dp))

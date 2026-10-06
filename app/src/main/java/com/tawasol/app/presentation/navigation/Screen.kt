@@ -8,7 +8,11 @@ sealed class Screen(val route: String) {
     data object ChatDetail : Screen("chat_detail/{conversationId}") {
         fun createRoute(conversationId: String) = "chat_detail/$conversationId"
     }
-    data object NewChat : Screen("new_chat")
-    data object Profile : Screen("profile")
+    data object UserSearch : Screen("user_search")
+    data object UserProfile : Screen("user_profile/{userId}") {
+        fun createRoute(userId: String) = "user_profile/$userId"
+    }
+    data object EditProfile : Screen("edit_profile")
+    data object PrivacySettings : Screen("privacy_settings")
     data object Settings : Screen("settings")
 }

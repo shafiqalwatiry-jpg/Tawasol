@@ -2,25 +2,33 @@ package com.tawasol.app.domain.usecase
 
 import com.tawasol.app.domain.model.Conversation
 import com.tawasol.app.domain.model.Message
+import com.tawasol.app.domain.model.PrivacySettings
 import com.tawasol.app.domain.model.User
 import com.tawasol.app.domain.repository.AuthRepository
 import com.tawasol.app.domain.repository.ChatRepository
+import com.tawasol.app.domain.repository.UserRepository
 import kotlinx.coroutines.flow.Flow
 
 class LoginUseCase(private val authRepository: AuthRepository) {
-    suspend operator fun invoke(username: String, password: String): Result<User> {
-        val cleanUsername = username.trim().removePrefix("@")
-        if (cleanUsername.isEmpty()) {
-            return Result.failure(IllegalArgumentException("يرجى إدخال اسم المستخدم"))
+    suspend operator fun invoke(loginIdentifier: String, password: String): Result<User> {
+        val cleanIdentifier = loginIdentifier.trim()
+        if (cleanIdentifier.isEmpty()) {
+            return Result.failure(IllegalArgumentException("يرجى إدخال اسم المستخدم أو البريد الإلكتروني"))
         }
         if (password.length < 6) {
             return Result.failure(IllegalArgumentException("كلمة المرور يجب ألا تقل عن 6 أحرف"))
         }
-        return authRepository.loginWithUsername(cleanUsername, password)
+        return authRepository.login(cleanIdentifier, password)
     }
 }
 
 class RegisterUseCase(private val authRepository: AuthRepository) {
+    private val reservedUsernames = setOf(
+        "admin", "administrator", "support", "tawasol", "help",
+        "root", "system", "moderator", "official", "security", "bot"
+    )
+    private val usernameRegex = "^[a-zA-Z0-9_]{3,30}$".toRegex()
+
     suspend operator fun invoke(
         username: String,
         password: String,
@@ -28,23 +36,91 @@ class RegisterUseCase(private val authRepository: AuthRepository) {
         phone: String? = null,
         email: String? = null
     ): Result<User> {
-        val cleanUsername = username.trim().removePrefix("@")
-        if (cleanUsername.length < 3) {
-            return Result.failure(IllegalArgumentException("اسم المستخدم يجب أن يتكون من 3 أحرف على الأقل"))
+        val cleanUsername = username.trim().removePrefix("@").lowercase()
+
+        if (cleanUsername.length < 3 || cleanUsername.length > 30) {
+            return Result.failure(IllegalArgumentException("اسم المستخدم يجب أن يكون بين 3 إلى 30 حرفاً"))
         }
+
+        if (!cleanUsername.matches(usernameRegex)) {
+            return Result.failure(IllegalArgumentException("اسم المستخدم يجب أن يحتوي فقط على أحرف إنجليزية وأرقام والشرطة السفلية (_)"))
+        }
+
+        if (reservedUsernames.contains(cleanUsername)) {
+            return Result.failure(IllegalArgumentException("اسم المستخدم محجوز لنظام تواصل، يرجى اختيار اسم آخر"))
+        }
+
         if (password.length < 8) {
-            return Result.failure(IllegalArgumentException("كلمة المرور يجب أن تكون 8 أحرف على الأقل للأمان"))
+            return Result.failure(IllegalArgumentException("كلمة المرور يجب أن تكون 8 أحرف على الأقل لحماية حسابك"))
         }
-        if (displayName.isBlank()) {
+
+        val hasLetter = password.any { it.isLetter() }
+        val hasDigit = password.any { it.isDigit() }
+        if (!hasLetter || !hasDigit) {
+            return Result.failure(IllegalArgumentException("كلمة المرور يجب أن تحتوي على مزيج من الحروف والأرقام"))
+        }
+
+        if (displayName.trim().isEmpty()) {
             return Result.failure(IllegalArgumentException("يرجى إدخال الاسم الظاهر"))
         }
+
+        val cleanPhone = phone?.trim()?.takeIf { it.isNotEmpty() }
+        if (cleanPhone != null && cleanPhone.length < 7) {
+            return Result.failure(IllegalArgumentException("يرجى التأكد من صحة رقم الهاتف المدخل"))
+        }
+
+        val cleanEmail = email?.trim()?.takeIf { it.isNotEmpty() }
+        if (cleanEmail != null && (!cleanEmail.contains("@") || !cleanEmail.contains("."))) {
+            return Result.failure(IllegalArgumentException("صيغة البريد الإلكتروني غير صحيحة"))
+        }
+
         return authRepository.register(
             username = cleanUsername,
             password = password,
             displayName = displayName.trim(),
-            phone = phone?.takeIf { it.isNotBlank() },
-            email = email?.takeIf { it.isNotBlank() }
+            phone = cleanPhone,
+            email = cleanEmail
         )
+    }
+}
+
+class SearchUsersUseCase(private val userRepository: UserRepository) {
+    suspend operator fun invoke(query: String): Result<List<User>> {
+        val cleanQuery = query.trim().removePrefix("@")
+        if (cleanQuery.isEmpty()) {
+            return Result.success(emptyList())
+        }
+        return userRepository.searchUsers(cleanQuery)
+    }
+}
+
+class UpdateProfileUseCase(private val userRepository: UserRepository) {
+    suspend operator fun invoke(userId: String, displayName: String, bio: String?): Result<User> {
+        if (displayName.trim().isEmpty()) {
+            return Result.failure(IllegalArgumentException("الاسم الظاهر لا يمكن أن يكون فارغاً"))
+        }
+        return userRepository.updateProfile(userId, displayName.trim(), bio?.trim())
+    }
+}
+
+class UploadAvatarUseCase(private val userRepository: UserRepository) {
+    suspend operator fun invoke(userId: String, imageBytes: ByteArray, mimeType: String): Result<String> {
+        if (imageBytes.isEmpty()) {
+            return Result.failure(IllegalArgumentException("الملف المختار فارغ"))
+        }
+        return userRepository.uploadAvatar(userId, imageBytes, mimeType)
+    }
+}
+
+class GetPrivacySettingsUseCase(private val userRepository: UserRepository) {
+    operator fun invoke(userId: String): Flow<PrivacySettings?> {
+        return userRepository.getPrivacySettings(userId)
+    }
+}
+
+class UpdatePrivacySettingsUseCase(private val userRepository: UserRepository) {
+    suspend operator fun invoke(settings: PrivacySettings): Result<Unit> {
+        return userRepository.updatePrivacySettings(settings)
     }
 }
 

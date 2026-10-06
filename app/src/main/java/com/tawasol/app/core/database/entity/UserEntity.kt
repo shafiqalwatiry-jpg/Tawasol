@@ -12,7 +12,10 @@ data class UserEntity(
     val displayName: String,
     val avatarUrl: String? = null,
     val bio: String? = null,
+    val phone: String? = null, // Only stored for the logged-in user
+    val email: String? = null, // Only stored for the logged-in user
     val isOnline: Boolean = false,
     val lastSeen: Instant? = null,
+    val createdAt: Instant = Instant.now(),
     val updatedAt: Instant = Instant.now()
 )
