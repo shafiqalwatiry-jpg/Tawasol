@@ -36,10 +36,24 @@ interface ChatRepository {
     fun getMessages(conversationId: String, limit: Int = 50): Flow<List<Message>>
     fun getConversation(conversationId: String): Flow<Conversation?>
     suspend fun getOrCreateDirectConversation(otherUserId: String): Result<String>
+    suspend fun createGroup(title: String, description: String?, memberUserIds: List<String>): Result<String>
+    suspend fun addGroupMember(conversationId: String, userId: String): Result<Unit>
+    suspend fun removeGroupMember(conversationId: String, userId: String): Result<Unit>
+    suspend fun getGroupMembers(conversationId: String): Result<List<User>>
     suspend fun sendMessage(
         conversationId: String,
         text: String?,
         replyToId: String? = null
+    ): Result<Message>
+    suspend fun sendMediaMessage(
+        conversationId: String,
+        fileBytes: ByteArray,
+        fileName: String,
+        mimeType: String,
+        messageType: com.tawasol.app.domain.model.MessageType,
+        caption: String? = null,
+        replyToId: String? = null,
+        durationSeconds: Int? = null
     ): Result<Message>
     suspend fun markConversationAsRead(conversationId: String): Result<Unit>
     suspend fun fetchOlderMessages(

@@ -17,6 +17,7 @@ import io.github.jan.supabase.postgrest.query.Order
 import io.github.jan.supabase.realtime.PostgresAction
 import io.github.jan.supabase.realtime.channel
 import io.github.jan.supabase.realtime.postgresChangeFlow
+import io.github.jan.supabase.storage.storage
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.channels.awaitClose
@@ -317,6 +318,111 @@ class ChatRepositoryImpl(
         }
     }
 
+    override suspend fun sendMediaMessage(
+        conversationId: String,
+        fileBytes: ByteArray,
+        fileName: String,
+        mimeType: String,
+        messageType: MessageType,
+        caption: String?,
+        replyToId: String?,
+        durationSeconds: Int?
+    ): Result<Message> = withContext(Dispatchers.IO) {
+        val currentUserId = currentUserIdProvider()
+            ?: return@withContext Result.failure(Exception("يجب تسجيل الدخول لإرسال الملفات"))
+
+        val localId = UUID.randomUUID().toString()
+        val now = Instant.now()
+        val typeStr = when (messageType) {
+            MessageType.IMAGE -> "image"
+            MessageType.AUDIO -> "audio"
+            else -> "file"
+        }
+
+        val localMessage = MessageEntity(
+            id = localId,
+            conversationId = conversationId,
+            senderId = currentUserId,
+            text = caption,
+            messageType = typeStr,
+            status = "sending",
+            replyToMessageId = replyToId,
+            fileSize = fileBytes.size.toLong(),
+            durationSeconds = durationSeconds,
+            createdAt = now
+        )
+        database.messageDao().insertMessage(localMessage)
+        val defaultLast = when (typeStr) {
+            "image" -> "صورة"
+            "audio" -> "رسالة صوتية"
+            else -> fileName
+        }
+        database.conversationDao().updateLastMessage(conversationId, caption ?: defaultLast, now)
+
+        val isOnline = try { networkMonitor.isOnline.first() } catch (e: Exception) { false }
+        if (!isOnline) {
+            database.messageDao().insertOutboxMessage(
+                OutboxMessageEntity(
+                    localId = localId,
+                    conversationId = conversationId,
+                    text = caption,
+                    messageType = typeStr,
+                    replyToMessageId = replyToId
+                )
+            )
+            return@withContext Result.success(
+                Message(
+                    id = localId,
+                    conversationId = conversationId,
+                    senderId = currentUserId,
+                    text = caption,
+                    type = messageType,
+                    status = MessageStatus.SENDING,
+                    createdAt = now
+                )
+            )
+        }
+
+        try {
+            val storagePath = "$currentUserId/$conversationId/${System.currentTimeMillis()}_$fileName"
+            val bucket = supabaseProvider.client.storage.from("chat-media")
+            bucket.upload(path = storagePath, data = fileBytes, upsert = true)
+            val publicUrl = bucket.publicUrl(storagePath)
+
+            val payload = buildJsonObject {
+                put("id", localId)
+                put("conversation_id", conversationId)
+                put("sender_id", currentUserId)
+                put("text", caption ?: "")
+                put("message_type", typeStr)
+                put("status", "sent")
+                put("media_url", publicUrl)
+                put("file_size", fileBytes.size.toLong())
+                if (durationSeconds != null) put("duration_seconds", durationSeconds)
+                if (replyToId != null) put("reply_to_message_id", replyToId)
+            }
+
+            supabaseProvider.postgrest.from(SupabaseConfig.MESSAGES_TABLE).insert(payload)
+            database.messageDao().updateMessageStatus(localId, "sent")
+
+            Result.success(
+                Message(
+                    id = localId,
+                    conversationId = conversationId,
+                    senderId = currentUserId,
+                    text = caption,
+                    type = messageType,
+                    status = MessageStatus.SENT,
+                    mediaUrl = publicUrl,
+                    createdAt = now
+                )
+            )
+        } catch (e: Exception) {
+            database.messageDao().updateMessageStatus(localId, "failed")
+            Result.failure(Exception("فشل إرسال الملف: ${e.localizedMessage ?: "تحقق من الاتصال"}"))
+        }
+    }
+
     override suspend fun markConversationAsRead(conversationId: String): Result<Unit> = withContext(Dispatchers.IO) {
         val currentUserId = currentUserIdProvider() ?: return@withContext Result.success(Unit)
 
@@ -557,6 +663,93 @@ class ChatRepositoryImpl(
             }
 
             Result.success(Unit)
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    override suspend fun createGroup(title: String, description: String?, memberUserIds: List<String>): Result<String> = withContext(Dispatchers.IO) {
+        val currentUserId = currentUserIdProvider()
+            ?: return@withContext Result.failure(Exception("يجب تسجيل الدخول لإنشاء مجموعة"))
+
+        if (title.isBlank()) {
+            return@withContext Result.failure(Exception("اسم المجموعة لا يمكن أن يكون فارغاً"))
+        }
+
+        try {
+            val uuidList = memberUserIds.map { kotlinx.serialization.json.JsonPrimitive(it) }
+            val response = supabaseProvider.postgrest.rpc(
+                "create_group_conversation",
+                buildJsonObject {
+                    put("group_title", title.trim())
+                    put("group_description", description?.trim() ?: "")
+                    put("member_ids", kotlinx.serialization.json.JsonArray(uuidList))
+                }
+            ).decodeSingle<String>()
+
+            syncConversations()
+            Result.success(response)
+        } catch (e: Exception) {
+            Result.failure(Exception("فشل إنشاء المجموعة: ${e.localizedMessage ?: "خطأ غير معروف"}"))
+        }
+    }
+
+    override suspend fun addGroupMember(conversationId: String, userId: String): Result<Unit> = withContext(Dispatchers.IO) {
+        try {
+            supabaseProvider.postgrest.rpc(
+                "add_group_member",
+                buildJsonObject {
+                    put("target_conversation_id", conversationId)
+                    put("target_user_id", userId)
+                }
+            )
+            Result.success(Unit)
+        } catch (e: Exception) {
+            Result.failure(Exception("فشل إضافة العضو: ${e.localizedMessage ?: ""}"))
+        }
+    }
+
+    override suspend fun removeGroupMember(conversationId: String, userId: String): Result<Unit> = withContext(Dispatchers.IO) {
+        try {
+            supabaseProvider.postgrest.rpc(
+                "remove_group_member",
+                buildJsonObject {
+                    put("target_conversation_id", conversationId)
+                    put("target_user_id", userId)
+                }
+            )
+            Result.success(Unit)
+        } catch (e: Exception) {
+            Result.failure(Exception("فشل إزالة العضو: ${e.localizedMessage ?: ""}"))
+        }
+    }
+
+    override suspend fun getGroupMembers(conversationId: String): Result<List<User>> = withContext(Dispatchers.IO) {
+        try {
+            val members = supabaseProvider.postgrest.from("conversation_members")
+                .select {
+                    filter { eq("conversation_id", conversationId) }
+                }.decodeList<RemoteConversationMemberDto>()
+
+            val userIds = members.map { it.user_id }
+            if (userIds.isEmpty()) return@withContext Result.success(emptyList())
+
+            val profiles = supabaseProvider.postgrest.from(SupabaseConfig.PROFILES_TABLE)
+                .select {
+                    filter { isIn("id", userIds) }
+                }.decodeList<ProfileDto>()
+
+            val resultUsers = profiles.map {
+                User(
+                    id = it.id,
+                    username = it.username,
+                    displayName = it.display_name,
+                    avatarUrl = it.avatar_url,
+                    bio = it.bio,
+                    isOnline = it.is_online ?: false
+                )
+            }
+            Result.success(resultUsers)
         } catch (e: Exception) {
             Result.failure(e)
         }

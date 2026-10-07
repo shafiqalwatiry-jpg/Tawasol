@@ -488,7 +488,7 @@ RETURNS trigger AS $$
 BEGIN
     UPDATE public.conversations
     SET 
-        last_message_text = COALESCE(NEW.text, 'رسالة'),
+        last_message_text = COALESCE(NEW.text, CASE WHEN NEW.message_type = 'image' THEN 'صورة' ELSE 'ملف' END),
         last_message_at = NEW.created_at,
         updated_at = NOW()
     WHERE id = NEW.conversation_id;
@@ -501,4 +501,152 @@ DROP TRIGGER IF EXISTS on_message_inserted ON public.messages;
 CREATE TRIGGER on_message_inserted
     AFTER INSERT ON public.messages
     FOR EACH ROW EXECUTE PROCEDURE public.handle_new_message_preview();
+
+-- ==============================================================================
+-- PHASE 4: CHAT-MEDIA STORAGE BUCKET & RLS POLICIES
+-- ==============================================================================
+INSERT INTO storage.buckets (id, name, public) 
+VALUES ('chat-media', 'chat-media', true)
+ON CONFLICT (id) DO NOTHING;
+
+CREATE POLICY "Conversation members can read chat media" ON storage.objects
+    FOR SELECT USING (
+        bucket_id = 'chat-media' AND
+        auth.role() = 'authenticated'
+    );
+
+CREATE POLICY "Authenticated users can upload chat media" ON storage.objects
+    FOR INSERT WITH CHECK (
+        bucket_id = 'chat-media' AND
+        auth.role() = 'authenticated'
+    );
+
+-- ==============================================================================
+-- PHASE 6: GROUP MANAGEMENT RPC FUNCTIONS
+-- ==============================================================================
+CREATE OR REPLACE FUNCTION public.create_group_conversation(
+    group_title TEXT,
+    group_description TEXT,
+    member_ids UUID[]
+)
+RETURNS UUID
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+DECLARE
+    current_uid UUID;
+    new_convo_id UUID;
+    m_id UUID;
+BEGIN
+    current_uid := auth.uid();
+    IF current_uid IS NULL THEN
+        RAISE EXCEPTION 'Authentication required';
+    END IF;
+
+    IF length(trim(group_title)) = 0 THEN
+        RAISE EXCEPTION 'Group title cannot be empty';
+    END IF;
+
+    INSERT INTO public.conversations (type, title, description, created_by, last_message_at)
+    VALUES ('group', group_title, group_description, current_uid, NOW())
+    RETURNING id INTO new_convo_id;
+
+    INSERT INTO public.conversation_members (conversation_id, user_id, role, last_read_at)
+    VALUES (new_convo_id, current_uid, 'creator', NOW());
+
+    IF member_ids IS NOT NULL THEN
+        FOREACH m_id IN ARRAY member_ids
+        LOOP
+            IF m_id <> current_uid AND EXISTS (SELECT 1 FROM public.profiles WHERE id = m_id) THEN
+                INSERT INTO public.conversation_members (conversation_id, user_id, role, last_read_at)
+                VALUES (new_convo_id, m_id, 'member', NOW())
+                ON CONFLICT (conversation_id, user_id) DO NOTHING;
+            END IF;
+        END LOOP;
+    END IF;
+
+    RETURN new_convo_id;
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION public.add_group_member(
+    target_conversation_id UUID,
+    target_user_id UUID
+)
+RETURNS VOID
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+DECLARE
+    current_uid UUID;
+    user_role TEXT;
+BEGIN
+    current_uid := auth.uid();
+    IF current_uid IS NULL THEN
+        RAISE EXCEPTION 'Authentication required';
+    END IF;
+
+    SELECT role INTO user_role FROM public.conversation_members
+    WHERE conversation_id = target_conversation_id AND user_id = current_uid;
+
+    IF user_role IS NULL OR (user_role <> 'admin' AND user_role <> 'creator') THEN
+        RAISE EXCEPTION 'Permission denied: only admins can add members';
+    END IF;
+
+    IF NOT EXISTS (SELECT 1 FROM public.profiles WHERE id = target_user_id) THEN
+        RAISE EXCEPTION 'User does not exist';
+    END IF;
+
+    INSERT INTO public.conversation_members (conversation_id, user_id, role, last_read_at)
+    VALUES (target_conversation_id, target_user_id, 'member', NOW())
+    ON CONFLICT (conversation_id, user_id) DO NOTHING;
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION public.remove_group_member(
+    target_conversation_id UUID,
+    target_user_id UUID
+)
+RETURNS VOID
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+DECLARE
+    current_uid UUID;
+    caller_role TEXT;
+    target_role TEXT;
+BEGIN
+    current_uid := auth.uid();
+    IF current_uid IS NULL THEN
+        RAISE EXCEPTION 'Authentication required';
+    END IF;
+
+    IF current_uid = target_user_id THEN
+        DELETE FROM public.conversation_members
+        WHERE conversation_id = target_conversation_id AND user_id = current_uid;
+        RETURN;
+    END IF;
+
+    SELECT role INTO caller_role FROM public.conversation_members
+    WHERE conversation_id = target_conversation_id AND user_id = current_uid;
+
+    IF caller_role IS NULL OR (caller_role <> 'admin' AND caller_role <> 'creator') THEN
+        RAISE EXCEPTION 'Permission denied: only admins can remove members';
+    END IF;
+
+    SELECT role INTO target_role FROM public.conversation_members
+    WHERE conversation_id = target_conversation_id AND user_id = target_user_id;
+
+    IF target_role = 'creator' THEN
+        RAISE EXCEPTION 'Cannot remove group creator';
+    END IF;
+
+    DELETE FROM public.conversation_members
+    WHERE conversation_id = target_conversation_id AND user_id = target_user_id;
+END;
+$$;
+
 

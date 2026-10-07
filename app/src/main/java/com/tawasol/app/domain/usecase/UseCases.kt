@@ -143,6 +143,26 @@ class SendMessageUseCase(private val chatRepository: ChatRepository) {
     }
 }
 
+class SendMediaMessageUseCase(private val chatRepository: ChatRepository) {
+    suspend operator fun invoke(
+        conversationId: String,
+        fileBytes: ByteArray,
+        fileName: String,
+        mimeType: String,
+        messageType: MessageType,
+        caption: String? = null,
+        durationSeconds: Int? = null
+    ): Result<Message> {
+        if (fileBytes.isEmpty()) {
+            return Result.failure(IllegalArgumentException("الملف المختار فارغ"))
+        }
+        if (fileBytes.size > 25 * 1024 * 1024) {
+            return Result.failure(IllegalArgumentException("حجم الملف يتجاوز الحد الأقصى المسموح (25 ميجابايت)"))
+        }
+        return chatRepository.sendMediaMessage(conversationId, fileBytes, fileName, mimeType, messageType, caption, durationSeconds = durationSeconds)
+    }
+}
+
 class GetMessagesUseCase(private val chatRepository: ChatRepository) {
     operator fun invoke(conversationId: String, limit: Int = 50): Flow<List<Message>> {
         return chatRepository.getMessages(conversationId, limit)
@@ -167,5 +187,41 @@ class GetOrCreateConversationUseCase(private val chatRepository: ChatRepository)
 class MarkConversationAsReadUseCase(private val chatRepository: ChatRepository) {
     suspend operator fun invoke(conversationId: String): Result<Unit> {
         return chatRepository.markConversationAsRead(conversationId)
+    }
+}
+
+class CreateGroupUseCase(private val chatRepository: ChatRepository) {
+    suspend operator fun invoke(title: String, description: String?, memberUserIds: List<String>): Result<String> {
+        if (title.trim().isEmpty()) {
+            return Result.failure(IllegalArgumentException("اسم المجموعة لا يمكن أن يكون فارغاً"))
+        }
+        return chatRepository.createGroup(title.trim(), description?.trim(), memberUserIds)
+    }
+}
+
+class AddGroupMemberUseCase(private val chatRepository: ChatRepository) {
+    suspend operator fun invoke(conversationId: String, userId: String): Result<Unit> {
+        if (conversationId.isBlank() || userId.isBlank()) {
+            return Result.failure(IllegalArgumentException("بيانات غير صحيحة"))
+        }
+        return chatRepository.addGroupMember(conversationId, userId)
+    }
+}
+
+class RemoveGroupMemberUseCase(private val chatRepository: ChatRepository) {
+    suspend operator fun invoke(conversationId: String, userId: String): Result<Unit> {
+        if (conversationId.isBlank() || userId.isBlank()) {
+            return Result.failure(IllegalArgumentException("بيانات غير صحيحة"))
+        }
+        return chatRepository.removeGroupMember(conversationId, userId)
+    }
+}
+
+class GetGroupMembersUseCase(private val chatRepository: ChatRepository) {
+    suspend operator fun invoke(conversationId: String): Result<List<User>> {
+        if (conversationId.isBlank()) {
+            return Result.failure(IllegalArgumentException("معرف المجموعة غير صحيح"))
+        }
+        return chatRepository.getGroupMembers(conversationId)
     }
 }

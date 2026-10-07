@@ -22,9 +22,9 @@ android {
             useSupportLibrary = true
         }
 
-        // Supabase configuration placeholders (can be overridden via local.properties or BuildConfig)
-        buildConfigField("String", "SUPABASE_URL", "\"https://your-project.supabase.co\"")
-        buildConfigField("String", "SUPABASE_ANON_KEY", "\"eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...\"")
+        // Supabase configuration
+        buildConfigField("String", "SUPABASE_URL", "\"https://wyrkekldegvsvvlztisr.supabase.co\"")
+        buildConfigField("String", "SUPABASE_ANON_KEY", "\"eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Ind5cmtla2xkZWd2c3Z2bHp0aXNyIiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTEzMDU2OTQsImV4cCI6MjEwNjg4MTY5NH0.Ejtiwhyi1Ctk7chEaPvxPninLLhJHao8wGyrgWucw8w\"")
     }
 
     buildTypes {

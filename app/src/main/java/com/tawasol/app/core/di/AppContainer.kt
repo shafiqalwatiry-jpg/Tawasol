@@ -12,16 +12,21 @@ import com.tawasol.app.data.repository.UserRepositoryImpl
 import com.tawasol.app.domain.repository.AuthRepository
 import com.tawasol.app.domain.repository.ChatRepository
 import com.tawasol.app.domain.repository.UserRepository
+import com.tawasol.app.domain.usecase.AddGroupMemberUseCase
+import com.tawasol.app.domain.usecase.CreateGroupUseCase
 import com.tawasol.app.domain.usecase.GetConversationUseCase
 import com.tawasol.app.domain.usecase.GetConversationsUseCase
+import com.tawasol.app.domain.usecase.GetGroupMembersUseCase
 import com.tawasol.app.domain.usecase.GetMessagesUseCase
 import com.tawasol.app.domain.usecase.GetOrCreateConversationUseCase
 import com.tawasol.app.domain.usecase.GetPrivacySettingsUseCase
 import com.tawasol.app.domain.usecase.LoginUseCase
 import com.tawasol.app.domain.usecase.MarkConversationAsReadUseCase
 import com.tawasol.app.domain.usecase.RegisterUseCase
+import com.tawasol.app.domain.usecase.RemoveGroupMemberUseCase
 import com.tawasol.app.domain.usecase.SearchUsersUseCase
 import com.tawasol.app.domain.usecase.SendMessageUseCase
+import com.tawasol.app.domain.usecase.SendMediaMessageUseCase
 import com.tawasol.app.domain.usecase.UpdatePrivacySettingsUseCase
 import com.tawasol.app.domain.usecase.UpdateProfileUseCase
 import com.tawasol.app.domain.usecase.UploadAvatarUseCase
@@ -45,8 +50,13 @@ interface AppContainer {
     val getConversationUseCase: GetConversationUseCase
     val getMessagesUseCase: GetMessagesUseCase
     val sendMessageUseCase: SendMessageUseCase
+    val sendMediaMessageUseCase: SendMediaMessageUseCase
     val getOrCreateConversationUseCase: GetOrCreateConversationUseCase
     val markConversationAsReadUseCase: MarkConversationAsReadUseCase
+    val createGroupUseCase: CreateGroupUseCase
+    val addGroupMemberUseCase: AddGroupMemberUseCase
+    val removeGroupMemberUseCase: RemoveGroupMemberUseCase
+    val getGroupMembersUseCase: GetGroupMembersUseCase
 }
 
 class DefaultAppContainer(private val context: Context) : AppContainer {
@@ -128,11 +138,31 @@ class DefaultAppContainer(private val context: Context) : AppContainer {
         SendMessageUseCase(chatRepository)
     }
 
+    override val sendMediaMessageUseCase: SendMediaMessageUseCase by lazy {
+        SendMediaMessageUseCase(chatRepository)
+    }
+
     override val getOrCreateConversationUseCase: GetOrCreateConversationUseCase by lazy {
         GetOrCreateConversationUseCase(chatRepository)
     }
 
     override val markConversationAsReadUseCase: MarkConversationAsReadUseCase by lazy {
         MarkConversationAsReadUseCase(chatRepository)
+    }
+
+    override val createGroupUseCase: CreateGroupUseCase by lazy {
+        CreateGroupUseCase(chatRepository)
+    }
+
+    override val addGroupMemberUseCase: AddGroupMemberUseCase by lazy {
+        AddGroupMemberUseCase(chatRepository)
+    }
+
+    override val removeGroupMemberUseCase: RemoveGroupMemberUseCase by lazy {
+        RemoveGroupMemberUseCase(chatRepository)
+    }
+
+    override val getGroupMembersUseCase: GetGroupMembersUseCase by lazy {
+        GetGroupMembersUseCase(chatRepository)
     }
 }
