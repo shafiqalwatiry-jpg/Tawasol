@@ -31,6 +31,8 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -284,7 +286,7 @@ fun RegisterScreen(
             if (state.errorMessage != null) {
                 Spacer(modifier = Modifier.height(12.dp))
                 Text(
-                    text = state.errorMessage,
+                    text = state.errorMessage!!,
                     style = MaterialTheme.typography.bodyMedium.copy(
                         color = MaterialTheme.colorScheme.error,
                         fontWeight = FontWeight.Medium
