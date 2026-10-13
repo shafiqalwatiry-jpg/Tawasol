@@ -2,6 +2,7 @@ package com.tawasol.app.domain.usecase
 
 import com.tawasol.app.domain.model.Conversation
 import com.tawasol.app.domain.model.Message
+import com.tawasol.app.domain.model.MessageType
 import com.tawasol.app.domain.model.PrivacySettings
 import com.tawasol.app.domain.model.User
 import com.tawasol.app.domain.repository.AuthRepository

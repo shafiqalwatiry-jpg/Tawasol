@@ -2,6 +2,7 @@ package com.tawasol.app.domain.repository
 
 import com.tawasol.app.domain.model.Conversation
 import com.tawasol.app.domain.model.Message
+import com.tawasol.app.domain.model.MessageType
 import com.tawasol.app.domain.model.PrivacySettings
 import com.tawasol.app.domain.model.User
 import kotlinx.coroutines.flow.Flow
@@ -50,7 +51,7 @@ interface ChatRepository {
         fileBytes: ByteArray,
         fileName: String,
         mimeType: String,
-        messageType: com.tawasol.app.domain.model.MessageType,
+        messageType: MessageType,
         caption: String? = null,
         replyToId: String? = null,
         durationSeconds: Int? = null
