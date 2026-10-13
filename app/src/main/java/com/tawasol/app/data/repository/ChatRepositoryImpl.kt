@@ -386,7 +386,9 @@ class ChatRepositoryImpl(
         try {
             val storagePath = "$currentUserId/$conversationId/${System.currentTimeMillis()}_$fileName"
             val bucket = supabaseProvider.client.storage.from("chat-media")
-            bucket.upload(path = storagePath, data = fileBytes, upsert = true)
+            bucket.upload(path = storagePath, data = fileBytes) {
+                upsert = true
+            }
             val publicUrl = bucket.publicUrl(storagePath)
 
             val payload = buildJsonObject {

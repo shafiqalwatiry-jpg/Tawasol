@@ -258,9 +258,10 @@ class UserRepositoryImpl(
             val bucket = supabaseProvider.client.storage.from(SupabaseConfig.AVATARS_BUCKET)
             bucket.upload(
                 path = fileName,
-                data = imageBytes,
+                data = imageBytes
+            ) {
                 upsert = true
-            )
+            }
 
             val publicUrl = bucket.publicUrl(fileName)
 

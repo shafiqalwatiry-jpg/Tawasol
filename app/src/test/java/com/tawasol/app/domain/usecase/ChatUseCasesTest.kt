@@ -4,6 +4,7 @@ import com.tawasol.app.domain.model.Conversation
 import com.tawasol.app.domain.model.Message
 import com.tawasol.app.domain.model.MessageStatus
 import com.tawasol.app.domain.model.MessageType
+import com.tawasol.app.domain.model.User
 import com.tawasol.app.domain.repository.ChatRepository
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
@@ -108,6 +109,29 @@ class FakeChatRepository : ChatRepository {
 
     override suspend fun syncConversations(): Result<Unit> = Result.success(Unit)
     override suspend fun syncOutbox(): Result<Unit> = Result.success(Unit)
+
+    override suspend fun createGroup(title: String, description: String?, memberUserIds: List<String>): Result<String> =
+        Result.success("group_fake_id")
+
+    override suspend fun addGroupMember(conversationId: String, userId: String): Result<Unit> =
+        Result.success(Unit)
+
+    override suspend fun removeGroupMember(conversationId: String, userId: String): Result<Unit> =
+        Result.success(Unit)
+
+    override suspend fun getGroupMembers(conversationId: String): Result<List<User>> =
+        Result.success(emptyList())
+
+    override suspend fun sendMediaMessage(
+        conversationId: String,
+        fileBytes: ByteArray,
+        fileName: String,
+        mimeType: String,
+        messageType: MessageType,
+        caption: String?,
+        replyToId: String?,
+        durationSeconds: Int?
+    ): Result<Message> = Result.failure(NotImplementedError())
 }
 
 class ChatUseCasesTest {
