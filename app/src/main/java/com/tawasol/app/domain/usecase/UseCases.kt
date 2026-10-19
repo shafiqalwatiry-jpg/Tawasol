@@ -89,7 +89,7 @@ class SearchUsersUseCase(private val userRepository: UserRepository) {
     suspend operator fun invoke(query: String): Result<List<User>> {
         val cleanQuery = query.trim().removePrefix("@")
         if (cleanQuery.isEmpty()) {
-            return Result.success(emptyList())
+            return Result.success(emptyList<User>())
         }
         return userRepository.searchUsers(cleanQuery)
     }

@@ -726,7 +726,7 @@ class ChatRepositoryImpl(
         }
     }
 
-    override suspend fun getGroupMembers(conversationId: String): Result<List<User>> = withContext(Dispatchers.IO) {
+    override suspend fun getGroupMembers(conversationId: String): Result<List<User>> = withContext<Result<List<User>>>(Dispatchers.IO) {
         try {
             val members = supabaseProvider.postgrest.from("conversation_members")
                 .select {
@@ -734,26 +734,28 @@ class ChatRepositoryImpl(
                 }.decodeList<RemoteConversationMemberDto>()
 
             val userIds = members.map { it.user_id }
-            if (userIds.isEmpty()) return@withContext Result.success(emptyList())
+            if (userIds.isEmpty()) {
+                return@withContext Result.success(emptyList<User>())
+            }
 
             val profiles = supabaseProvider.postgrest.from(SupabaseConfig.PROFILES_TABLE)
                 .select {
                     filter { isIn("id", userIds) }
                 }.decodeList<ProfileDto>()
 
-            val resultUsers = profiles.map {
+            val resultUsers: List<User> = profiles.map {
                 User(
                     id = it.id,
                     username = it.username,
                     displayName = it.display_name,
                     avatarUrl = it.avatar_url,
                     bio = it.bio,
-                    isOnline = it.is_online ?: false
+                    isOnline = it.is_online
                 )
             }
-            Result.success(resultUsers)
+            Result.success<List<User>>(resultUsers)
         } catch (e: Exception) {
-            Result.failure(e)
+            Result.failure<List<User>>(e)
         }
     }
 
