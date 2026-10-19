@@ -11,6 +11,7 @@ import com.tawasol.app.domain.model.Conversation
 import com.tawasol.app.domain.model.Message
 import com.tawasol.app.domain.model.MessageStatus
 import com.tawasol.app.domain.model.MessageType
+import com.tawasol.app.domain.model.User
 import com.tawasol.app.domain.repository.ChatRepository
 import io.github.jan.supabase.postgrest.from
 import io.github.jan.supabase.postgrest.query.Order
