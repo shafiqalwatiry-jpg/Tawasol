@@ -15,6 +15,7 @@ import com.tawasol.app.domain.model.User
 import com.tawasol.app.domain.repository.ChatRepository
 import io.github.jan.supabase.postgrest.from
 import io.github.jan.supabase.postgrest.query.Order
+import io.github.jan.supabase.postgrest.query.filter.FilterOperator
 import io.github.jan.supabase.realtime.PostgresAction
 import io.github.jan.supabase.realtime.channel
 import io.github.jan.supabase.realtime.postgresChangeFlow
@@ -495,7 +496,7 @@ class ChatRepositoryImpl(
 
         val changeFlow = channel.postgresChangeFlow<PostgresAction>(schema = "public") {
             table = SupabaseConfig.MESSAGES_TABLE
-            filter = "conversation_id=eq.$conversationId"
+            filter("conversation_id", FilterOperator.EQ, conversationId)
         }
 
         val job = launch(Dispatchers.IO) {
